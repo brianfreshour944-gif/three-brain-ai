@@ -1,0 +1,25 @@
+{
+  "id": "02cb687f",
+  "description": "say ok",
+  "status": "failed",
+  "created_at": "2026-08-29T06:23:43.988626",
+  "updated_at": "2026-08-29T06:23:47.036657",
+  "project_root": "/home/ubuntu/three-brain-ai",
+  "context": {
+    "user_notes": ""
+  },
+  "round1_builder": null,
+  "round1_analyst": null,
+  "round1_strategist": null,
+  "round2_builder": null,
+  "round2_analyst": null,
+  "round2_strategist": null,
+  "builder_result": null,
+  "analyst_result": null,
+  "strategist_result": null,
+  "red_team_result": null,
+  "final_plan": null,
+  "approval_status": null,
+  "approval_notes": "",
+  "error": "HTTP 401: {\"error\":{\"message\":\"User not found.\",\"code\":401}}"
+}

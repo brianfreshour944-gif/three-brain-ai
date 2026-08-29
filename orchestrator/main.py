@@ -14,6 +14,7 @@ from orchestrator.config import REQUIRE_APPROVAL
 from orchestrator.context_manager import ContextManager, TaskContext
 from orchestrator.context_system import create_context_builder
 from orchestrator.memory import get_memory_manager
+from orchestrator.router import TaskClassifier, TaskComplexity, create_classifier
 from orchestrator.task_store import Task, TaskStore, get_task_store
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,7 @@ class ThreeBrainOrchestrator:
         self.memory = get_memory_manager()
         self.task_store = get_task_store()
         self.enable_red_team = enable_red_team
+        self.classifier = create_classifier()
 
         # Initialize agents
         if agents:
@@ -101,7 +103,7 @@ class ThreeBrainOrchestrator:
         file_contents: Optional[Dict[str, str]] = None,
         auto_approve: bool = False,
     ) -> OrchestrationResult:
-        """Run a full task through the two-round three-brain pipeline."""
+        """Run a task through the appropriate pipeline based on complexity."""
 
         # Create task
         task = self.task_store.create(
@@ -114,45 +116,168 @@ class ThreeBrainOrchestrator:
 
         logger.info(f"Starting task {task.id}: {task_description}")
 
+        # Classify task complexity
+        classification = self.classifier.classify(task_description, [str(f) for f in (relevant_files or [])])
+        logger.info(f"Task {task.id} classified as {classification.complexity.value}: {classification.reasoning}")
+
         try:
-            # Build context using ContextBuilder with Repomix
-            context_builder = create_context_builder(self.project_root)
-            
-            # Create model-specific contexts (local models have 4096 limit)
-            context_builder_model = context_builder.build_context(
-                task_description=task_description,
-                user_notes=user_notes,
-                relevant_files=relevant_files or [],
-                file_contents=file_contents or {},
-                target_model="deepseek",  # Use 4096 limit for local models
-                use_repomix=True,
-                reserve_tokens=3000,  # Reserve 3000 for completion (2048 max + buffer)
-            )
-            context_strategist = context_builder.build_context(
-                task_description=task_description,
-                user_notes=user_notes,
-                relevant_files=relevant_files or [],
-                file_contents=file_contents or {},
-                target_model="strategist",  # Use 200K limit for cloud model
-                use_repomix=True,
+            # FAST PATH: Trivial tasks - single LLM call, no context building
+            if classification.complexity == TaskComplexity.TRIVIAL:
+                logger.info(f"Task {task.id}: Using TRIVIAL fast path")
+                return await self._run_trivial_path(task, task_description, user_notes, classification)
+
+            # SIMPLE PATH: Single round, no Repomix, no Round 2, no Red Team
+            if classification.complexity == TaskComplexity.SIMPLE:
+                logger.info(f"Task {task.id}: Using SIMPLE path")
+                return await self._run_simple_path(task, task_description, user_notes, relevant_files, file_contents, classification)
+
+            # STANDARD/COMPLEX: Full pipeline with Repomix
+            logger.info(f"Task {task.id}: Using FULL pipeline ({classification.complexity.value})")
+            return await self._run_full_pipeline(
+                task, task_description, user_notes, relevant_files, file_contents,
+                classification, auto_approve
             )
 
-            # ============================================================
-            # ROUND 1: Parallel Independent Analysis
-            # ============================================================
-            logger.info("=== ROUND 1: Parallel Independent Analysis ===")
-            task.status = "round1_parallel"
+        except Exception as e:
+            logger.error(f"Task {task.id} failed: {e}")
+            task.status = "failed"
+            task.error = str(e)
             self.task_store.update(task)
+            raise
 
-            round1_results = await self._run_round1_parallel(task_description, context_builder_model, context_strategist)
-            task.round1_builder = round1_results["builder"]
-            task.round1_analyst = round1_results["analyst"]
-            task.round1_strategist = round1_results["strategist"]
-            self.task_store.update(task)
+    async def _run_trivial_path(
+        self,
+        task: Task,
+        task_description: str,
+        user_notes: str,
+        classification: Any,
+    ) -> OrchestrationResult:
+        """Fast path for trivial tasks - single LLM call."""
+        task.status = "trivial_fast_path"
+        self.task_store.update(task)
 
-            # ============================================================
-            # ROUND 2: Sequential Refinement
-            # ============================================================
+        # Single call to Strategist with minimal context
+        context = f"Task: {task_description}\nNotes: {user_notes}\n\nProvide a concise, direct answer."
+        
+        response = await self.strategist.process(task_description, context)
+        
+        task.final_plan = response.content
+        task.status = "approved"
+        self.task_store.update(task)
+
+        return OrchestrationResult(
+            task=task,
+            builder_output="",
+            analyst_output="",
+            strategist_output=response.content,
+            red_team_output=None,
+            round1_builder="",
+            round1_analyst="",
+            round1_strategist=response.content,
+            round2_builder="",
+            round2_analyst="",
+            round2_strategist=response.content,
+            final_plan=response.content,
+            requires_approval=False,
+        )
+
+    async def _run_simple_path(
+        self,
+        task: Task,
+        task_description: str,
+        user_notes: str,
+        relevant_files: Optional[List[Path]],
+        file_contents: Optional[Dict[str, str]],
+        classification: Any,
+    ) -> OrchestrationResult:
+        """Simple path: Round 1 only, no Repomix, no Round 2, no Red Team."""
+        task.status = "simple_path"
+        self.task_store.update(task)
+
+        context_builder = create_context_builder(self.project_root)
+        context = context_builder.build_context(
+            task_description=task_description,
+            user_notes=user_notes,
+            relevant_files=relevant_files or [],
+            file_contents=file_contents or {},
+            target_model="deepseek",
+            use_repomix=False,
+            reserve_tokens=classification.recommended_max_tokens,
+        )
+
+        # Round 1 only
+        round1_results = await self._run_round1_parallel(task_description, context, context)
+        task.round1_builder = round1_results["builder"]
+        task.round1_analyst = round1_results["analyst"]
+        task.round1_strategist = round1_results["strategist"]
+        self.task_store.update(task)
+
+        # Use Strategist's Round 1 output as final plan
+        final_plan = round1_results["strategist"]
+        task.final_plan = final_plan
+        task.status = "approved"
+        self.task_store.update(task)
+
+        return OrchestrationResult(
+            task=task,
+            builder_output=round1_results["builder"],
+            analyst_output=round1_results["analyst"],
+            strategist_output=round1_results["strategist"],
+            red_team_output=None,
+            round1_builder=round1_results["builder"],
+            round1_analyst=round1_results["analyst"],
+            round1_strategist=round1_results["strategist"],
+            round2_builder="",
+            round2_analyst="",
+            round2_strategist=round1_results["strategist"],
+            final_plan=final_plan,
+            requires_approval=False,
+        )
+
+    async def _run_full_pipeline(
+        self,
+        task: Task,
+        task_description: str,
+        user_notes: str,
+        relevant_files: Optional[List[Path]],
+        file_contents: Optional[Dict[str, str]],
+        classification: Any,
+        auto_approve: bool,
+    ) -> OrchestrationResult:
+        """Full pipeline with Repomix, Round 1, Round 2, and optional Red Team."""
+        context_builder = create_context_builder(self.project_root)
+        
+        context_builder_model = context_builder.build_context(
+            task_description=task_description,
+            user_notes=user_notes,
+            relevant_files=relevant_files or [],
+            file_contents=file_contents or {},
+            target_model="deepseek",
+            use_repomix=classification.use_repomix,
+            reserve_tokens=3000,
+        )
+        context_strategist = context_builder.build_context(
+            task_description=task_description,
+            user_notes=user_notes,
+            relevant_files=relevant_files or [],
+            file_contents=file_contents or {},
+            target_model="strategist",
+            use_repomix=classification.use_repomix,
+        )
+
+        # ROUND 1
+        logger.info("=== ROUND 1: Parallel Independent Analysis ===")
+        task.status = "round1_parallel"
+        self.task_store.update(task)
+
+        round1_results = await self._run_round1_parallel(task_description, context_builder_model, context_strategist)
+        task.round1_builder = round1_results["builder"]
+        task.round1_analyst = round1_results["analyst"]
+        task.round1_strategist = round1_results["strategist"]
+        self.task_store.update(task)
+
+        # ROUND 2
+        if not classification.skip_round2:
             logger.info("=== ROUND 2: Sequential Refinement ===")
             task.status = "round2_refinement"
             self.task_store.update(task)
@@ -164,60 +289,48 @@ class ThreeBrainOrchestrator:
             task.round2_analyst = round2_results["analyst"]
             task.round2_strategist = round2_results["strategist"]
             self.task_store.update(task)
+        else:
+            round2_results = {"builder": "", "analyst": "", "strategist": round1_results["strategist"]}
 
-            # ============================================================
-            # RED TEAM (Optional)
-            # ============================================================
-            red_team_output = None
-            if self.enable_red_team and self.red_team:
-                logger.info("=== RED TEAM SECURITY REVIEW ===")
-                task.status = "red_team"
-                self.task_store.update(task)
-
-                red_team_context = self._build_red_team_context(
-                    context_builder_model, round1_results, round2_results
-                )
-                red_team_response = await self.red_team.process(
-                    "Perform security review of the proposed implementation",
-                    red_team_context
-                )
-                task.red_team_result = red_team_response
-                red_team_output = red_team_response.content
-                self.task_store.update(task)
-
-            # Compile final plan
-            final_plan = self._compile_final_plan(task, round1_results, round2_results)
-            task.final_plan = final_plan
-            task.status = "awaiting_approval" if REQUIRE_APPROVAL and not auto_approve else "approved"
+        # RED TEAM
+        red_team_output = None
+        if self.enable_red_team and self.red_team and not classification.skip_red_team:
+            logger.info("=== RED TEAM SECURITY REVIEW ===")
+            task.status = "red_team"
             self.task_store.update(task)
 
-            # Handle approval
-            if REQUIRE_APPROVAL and not auto_approve:
-                logger.info("Awaiting human approval...")
-
-            logger.info(f"Task {task.id} completed successfully")
-            return OrchestrationResult(
-                task=task,
-                builder_output=round2_results["builder"],
-                analyst_output=round2_results["analyst"],
-                strategist_output=round2_results["strategist"],
-                red_team_output=red_team_output,
-                round1_builder=round1_results["builder"],
-                round1_analyst=round1_results["analyst"],
-                round1_strategist=round1_results["strategist"],
-                round2_builder=round2_results["builder"],
-                round2_analyst=round2_results["analyst"],
-                round2_strategist=round2_results["strategist"],
-                final_plan=final_plan,
-                requires_approval=REQUIRE_APPROVAL and not auto_approve,
+            red_team_context = self._build_red_team_context(
+                context_builder_model, round1_results, round2_results
             )
-
-        except Exception as e:
-            logger.error(f"Task {task.id} failed: {e}")
-            task.status = "failed"
-            task.error = str(e)
+            red_team_response = await self.red_team.process(
+                "Perform security review of the proposed implementation",
+                red_team_context
+            )
+            task.red_team_result = red_team_response
+            red_team_output = red_team_response.content
             self.task_store.update(task)
-            raise
+
+        # Compile final plan
+        final_plan = self._compile_final_plan(task, round1_results, round2_results)
+        task.final_plan = final_plan
+        task.status = "awaiting_approval" if REQUIRE_APPROVAL and not auto_approve else "approved"
+        self.task_store.update(task)
+
+        return OrchestrationResult(
+            task=task,
+            builder_output=round2_results["builder"] if round2_results["builder"] else round1_results["builder"],
+            analyst_output=round2_results["analyst"] if round2_results["analyst"] else round1_results["analyst"],
+            strategist_output=round2_results["strategist"],
+            red_team_output=red_team_output,
+            round1_builder=round1_results["builder"],
+            round1_analyst=round1_results["analyst"],
+            round1_strategist=round1_results["strategist"],
+            round2_builder=round2_results["builder"],
+            round2_analyst=round2_results["analyst"],
+            round2_strategist=round2_results["strategist"],
+            final_plan=final_plan,
+            requires_approval=REQUIRE_APPROVAL and not auto_approve,
+        )
 
     async def _run_round1_parallel(
         self,
@@ -369,9 +482,9 @@ class ThreeBrainOrchestrator:
         parts.append(round2_results["strategist"])
 
         # Red Team
-        if task.red_team_result:
+        if self.red_team_result:
             parts.append("\n\n## RED TEAM SECURITY REVIEW")
-            parts.append(task.red_team_result.content)
+            parts.append(self.red_team_result.content)
 
         parts.append("\n---\n")
         parts.append("## NEXT STEPS")

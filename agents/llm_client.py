@@ -6,10 +6,10 @@ import os
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,46 @@ class ChatCompletionChoice(BaseModel):
     index: int = 0
 
 
+class UsageDetails(BaseModel):
+    """Token usage details - handles OpenRouter's nested objects."""
+    cached_tokens: Optional[int] = None
+    audio_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
+    video_tokens: Optional[int] = None
+    # Allow extra fields for future compatibility
+    class Config:
+        extra = "allow"
+
+
+class CostDetails(BaseModel):
+    """Cost details from OpenRouter."""
+    upstream_inference_cost: Optional[float] = None
+    upstream_completions_cost: Optional[float] = None
+    # Allow extra fields
+    class Config:
+        extra = "allow"
+
+
+class Usage(BaseModel):
+    """Token usage with optional nested detail objects."""
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    prompt_tokens_details: Optional[UsageDetails] = None
+    completion_tokens_details: Optional[UsageDetails] = None
+    cost_details: Optional[CostDetails] = None
+    # Allow extra fields for future compatibility
+    class Config:
+        extra = "allow"
+
+
 class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionChoice]
     model: str
-    usage: Optional[Dict[str, Any]] = None
+    usage: Optional[Usage] = None
+    # Some providers might return extra fields
+    class Config:
+        extra = "allow"
 
 
 @dataclass
@@ -48,6 +84,27 @@ class LLMConfig:
     default_temperature: float = 0.3
     default_max_tokens: int = 4096
     timeout: int = 120
+
+
+class ChatCompletionChoice(BaseModel):
+    message: Message
+    finish_reason: str = "stop"
+    index: int = 0
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[Message]
+    temperature: float = 0.3
+    max_tokens: int = 4096
+    top_p: float = 0.9
+    stream: bool = False
+
+
+class ChatCompletionChoice(BaseModel):
+    message: Message
+    finish_reason: str = "stop"
+    index: int = 0
 
 
 class LLMClient:

@@ -5,7 +5,7 @@ from orchestrator.main import ThreeBrainOrchestrator, OrchestrationResult, creat
 from orchestrator.context_manager import ContextManager, TaskContext
 from orchestrator.memory import MemoryManager, ProjectMemory, get_memory_manager
 from orchestrator.task_store import Task, TaskStore, AgentResult, get_task_store
-from orchestrator.router import TaskRouter, AgentRole
+from orchestrator.router import TaskClassifier, TaskComplexity, TaskClassification, create_classifier, classify_task
 
 __all__ = [
     # Config
@@ -45,6 +45,9 @@ __all__ = [
     "get_task_store",
 
     # Router
-    "TaskRouter",
-    "AgentRole",
+    "TaskClassifier",
+    "TaskComplexity",
+    "TaskClassification",
+    "create_classifier",
+    "classify_task",
 ]
