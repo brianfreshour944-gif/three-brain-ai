@@ -1,0 +1,25 @@
+{
+  "id": "323b413e",
+  "description": "Create a Python retry decorator with exponential backoff that handles both sync and async functions",
+  "status": "failed",
+  "created_at": "2026-08-29T03:45:34.996620",
+  "updated_at": "2026-08-29T03:45:39.082414",
+  "project_root": "/home/ubuntu/three-brain-ai",
+  "context": {
+    "user_notes": ""
+  },
+  "round1_builder": null,
+  "round1_analyst": null,
+  "round1_strategist": null,
+  "round2_builder": null,
+  "round2_analyst": null,
+  "round2_strategist": null,
+  "builder_result": null,
+  "analyst_result": null,
+  "strategist_result": null,
+  "red_team_result": null,
+  "final_plan": null,
+  "approval_status": null,
+  "approval_notes": "",
+  "error": "HTTP 400: {\"error\":{\"message\":\"This model's maximum context length is 4096 tokens. However, you requested 30733 tokens (22541 in the messages, 8192 in the completion). Please reduce the length of the messages or completion.\",\"type\":\"invalid_request_error\",\"param\":\"messages\",\"code\":\"context_length_exceeded\"}}"
+}
