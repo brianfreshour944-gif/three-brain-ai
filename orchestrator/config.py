@@ -22,7 +22,7 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "http://localhost:8002/v1")
 # Model names
 MINISTRAL_MODEL = os.getenv("MINISTRAL_MODEL", "ministral")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek")
-STRATEGIST_MODEL = os.getenv("STRATEGIST_MODEL", "anthropic/claude-3.5-sonnet")
+STRATEGIST_MODEL = os.getenv("STRATEGIST_MODEL", "openrouter/nemotron-3-ultra-free")
 
 # Temperatures
 BUILDER_TEMP = float(os.getenv("BUILDER_TEMP", "0.3"))

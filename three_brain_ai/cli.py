@@ -20,7 +20,7 @@ from orchestrator import (
     get_task_store,
     get_memory_manager,
 )
-from orchestrator.safety import run_safety_check
+from orchestrator.safety import run_safety_checks as run_safety_check
 
 # FastAPI for serve command
 try:
