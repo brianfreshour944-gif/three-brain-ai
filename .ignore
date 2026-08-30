@@ -1,0 +1,15 @@
+# Excluded from IDE watching/indexing
+venv/
+__pycache__/
+*.pyc
+*.pyo
+models/
+tasks/
+*.db
+logs/
+.memory/
+.venv/
+node_modules/
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,25 @@
+{
+  "id": "e0e647f3",
+  "description": "Analyze the following Python code for bugs. Identify all bugs, explain them in detail, assess severity, and provide fixes for each bug:",
+  "status": "failed",
+  "created_at": "2026-08-29T23:00:50.855328",
+  "updated_at": "2026-08-29T23:00:59.759589",
+  "project_root": "/home/ubuntu/three-brain-ai",
+  "context": {
+    "user_notes": ""
+  },
+  "round1_builder": null,
+  "round1_analyst": null,
+  "round1_strategist": null,
+  "round2_builder": null,
+  "round2_analyst": null,
+  "round2_strategist": null,
+  "builder_result": null,
+  "analyst_result": null,
+  "strategist_result": null,
+  "red_team_result": null,
+  "final_plan": null,
+  "approval_status": null,
+  "approval_notes": "",
+  "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+}

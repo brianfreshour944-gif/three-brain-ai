@@ -211,8 +211,12 @@ class LLMClient:
 
 def create_ministral_client() -> LLMClient:
     """Create client for local Ministral (Builder)."""
+    base_url = os.getenv("MINISTRAL_BASE_URL", "http://localhost:8001/v1")
+    # Ensure V1 API prefix for llama.cpp OpenAI-compatible endpoint
+    if not base_url.endswith('/v1'):
+        base_url = base_url.rstrip('/') + '/v1'
     return LLMClient(LLMConfig(
-        base_url=os.getenv("MINISTRAL_BASE_URL", "http://localhost:8001/v1"),
+        base_url=base_url,
         api_key=os.getenv("MINISTRAL_API_KEY", "dummy"),
         model=os.getenv("MINISTRAL_MODEL", "ministral"),
         default_temperature=float(os.getenv("BUILDER_TEMP", "0.3")),
@@ -222,8 +226,12 @@ def create_ministral_client() -> LLMClient:
 
 def create_deepseek_client() -> LLMClient:
     """Create client for local DeepSeek (Analyst)."""
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "http://localhost:8002/v1")
+    # Ensure V1 API prefix for llama.cpp OpenAI-compatible endpoint
+    if not base_url.endswith('/v1'):
+        base_url = base_url.rstrip('/') + '/v1'
     return LLMClient(LLMConfig(
-        base_url=os.getenv("DEEPSEEK_BASE_URL", "http://localhost:8002/v1"),
+        base_url=base_url,
         api_key=os.getenv("DEEPSEEK_API_KEY", "dummy"),
         model=os.getenv("DEEPSEEK_MODEL", "deepseek"),
         default_temperature=float(os.getenv("ANALYST_TEMP", "0.2")),

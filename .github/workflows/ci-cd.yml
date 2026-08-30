@@ -1,0 +1,352 @@
+name: Three-Brain AI CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      run_full_tests:
+        description: 'Run full test suite including integration tests'
+        required: false
+        default: 'false'
+        type: boolean
+      deploy_staging:
+        description: 'Deploy to staging after tests pass'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.12'
+  POETRY_VERSION: '1.8.2'
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================
+  # Linting & Type Checking
+  # ============================================
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -q ruff mypy
+          pip install -e .[dev]
+
+      - name: Run Ruff (linting)
+        run: ruff check orchestrator/ agents/ three_brain_ai/ prompts/
+
+      - name: Run MyPy (type checking)
+        run: mypy orchestrator/ agents/ three_brain_ai/ --ignore-missing-imports
+
+      - name: Check formatting
+        run: ruff format --check orchestrator/ agents/ three_brain_ai/ prompts/
+
+  # ============================================
+  # Unit Tests
+  # ============================================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -q pytest pytest-asyncio pytest-cov
+          pip install -e .[dev]
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ -v --tb=short --cov=orchestrator --cov=agents --cov=three_brain_ai --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ============================================
+  # Safety Checks
+  # ============================================
+  safety-checks:
+    name: Safety Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Run safety checks
+        run: |
+          python -c "
+from orchestrator.safety import run_safety_checks
+from pathlib import Path
+passed, results = run_safety_checks(Path('.'))
+import json
+print(json.dumps(results, indent=2))
+if not passed:
+    exit(1)
+"
+
+  # ============================================
+  # Integration Tests (requires model endpoints)
+  # ============================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' || github.event.inputs.run_full_tests == 'true'
+    needs: [lint-and-typecheck, unit-tests, safety-checks]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Run integration tests
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python -m pytest tests/integration/ -v --tb=short --timeout=120
+
+  # ============================================
+  # Model Evaluation
+  # ============================================
+  model-evaluation:
+    name: Model Evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: [unit-tests, safety-checks]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Run model evaluation
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python -c "
+from orchestrator.learning import create_preference_learner
+from orchestrator.main import ThreeBrainOrchestrator, create_orchestrator
+from pathlib import Path
+import json
+
+# Run evaluation suite
+orch = create_orchestrator()
+
+# Test suite of evaluation tasks
+eval_tasks = [
+    'Create a simple Python function that adds two numbers',
+    'Create a retry decorator with exponential backoff',
+    'Refactor this function to use async/await',
+    'Design a REST API for user management',
+    'Find and fix the bug in this code',
+]
+
+results = {}
+for task in eval_tasks:
+    try:
+        result = asyncio.run(orch.run_task(task, auto_approve=True))
+        results[task] = {
+            'success': True,
+            'plan_length': len(result.final_plan),
+            'duration': 0  # Would need timing
+        }
+    except Exception as e:
+        results[task] = {'success': False, 'error': str(e)}
+
+with open('evaluation_results.json', 'w') as f:
+    json.dump(results, indent=2)
+
+print(json.dumps(results, indent=2))
+"
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-results
+          path: evaluation_results.json
+
+  # ============================================
+  # Learning System Update
+  # ============================================
+  learning-update:
+    name: Update Learning System
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [unit-tests, safety-checks]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Update learning system from task history
+        run: |
+          python -c "
+from orchestrator.learning import create_preference_learner
+from pathlib import Path
+import json
+
+learner = create_preference_learner(Path('learning.db'))
+
+# Analyze task history from task store
+from orchestrator.task_store import get_task_store
+store = get_task_store()
+tasks = store.list_all()
+
+# Record feedback from task history
+for task in tasks:
+    if task.approval_status in ('approved', 'rejected', 'revisions_requested'):
+        from orchestrator.learning import FeedbackRecord, FeedbackType, TaskComplexity
+        from datetime import datetime
+        import uuid
+        
+        feedback = FeedbackRecord(
+            id=str(uuid.uuid4())[:8],
+            task_id=task.id,
+            task_description=task.description,
+            complexity=TaskComplexity.STANDARD,  # Would be determined from task
+            pipeline_config={},
+            feedback_type=FeedbackType.APPROVE if task.approval_status == 'approved' else FeedbackType.REJECT,
+            feedback_notes=task.approval_notes or '',
+            timestamp=task.updated_at,
+            pipeline_duration_ms=0,
+            context_tokens=0,
+            success=task.approval_status == 'approved'
+        )
+        learner.record_feedback(feedback)
+
+# Save updated learning database as artifact
+import shutil
+shutil.copy('learning.db', 'learning_updated.db')
+"
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Upload updated learning database
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-database
+          path: learning_updated.db
+
+  # ============================================
+  # Deploy Staging
+  # ============================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    if: github.event.inputs.deploy_staging == 'true'
+    needs: [lint-and-typecheck, unit-tests, safety-checks, integration-tests]
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging..."
+          # Add your deployment logic here
+          # e.g., docker build, push to registry, deploy to Kubernetes, etc.
+
+      - name: Health check
+        run: |
+          sleep 30
+          curl -f https://staging.yourdomain.com/health || exit 1
+
+  # ============================================
+  # Deploy Production
+  # ============================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [lint-and-typecheck, unit-tests, safety-checks, integration-tests, model-evaluation]
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production..."
+          # Add your production deployment logic here
+
+      - name: Health check
+        run: |
+          sleep 30
+          curl -f https://api.yourdomain.com/health || exit 1
+
+      - name: Notify team
+        run: |
+          echo "Deployment complete!"
+          # Add notification (Slack, Discord, email, etc.)

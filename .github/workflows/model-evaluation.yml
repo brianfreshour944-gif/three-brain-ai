@@ -1,0 +1,324 @@
+name: Model Evaluation & Learning Updates
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild learning database'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ============================================
+  # Daily Model Evaluation
+  # ============================================
+  daily-evaluation:
+    name: Daily Model Evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Run evaluation suite
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python -c "
+import asyncio
+import json
+from orchestrator.main import ThreeBrainOrchestrator, create_orchestrator
+from orchestrator.learning import create_preference_learner
+from pathlib import Path
+import asyncio
+
+orch = create_orchestrator()
+learner = create_preference_learner(Path('learning.db'))
+
+# Comprehensive evaluation tasks by complexity
+eval_tasks = {
+    'trivial': [
+        'Create a function that adds two numbers',
+        'Write a hello world function',
+        'Return the string hello world',
+    ],
+    'simple': [
+        'Create a function that reverses a string',
+        'Write a function to calculate factorial',
+        'Create a function to check if a number is prime',
+    ],
+    'standard': [
+        'Create a retry decorator with exponential backoff',
+        'Implement a simple cache with TTL',
+        'Create a context manager for timing code',
+    ],
+    'complex': [
+        'Design a REST API for user management with auth',
+        'Implement a simple rate limiter',
+        'Create a plugin system for a Python application',
+    ]
+}
+
+async def evaluate():
+    orch = create_orchestrator()
+    results = {}
+    
+    for complexity, tasks in eval_tasks.items():
+        results[complexity] = []
+        for task in tasks:
+            try:
+                result = await orch.run_task(task, auto_approve=True)
+                results[complexity].append({
+                    'task': task,
+                    'success': True,
+                    'plan_length': len(result.final_plan),
+                    'complexity': 'trivial'  # Would be determined by classifier
+                })
+            except Exception as e:
+                results[complexity].append({
+                    'task': task,
+                    'success': False,
+                    'error': str(e)
+                })
+    
+    return results
+
+results = asyncio.run(evaluate())
+
+# Save results with timestamp
+import datetime
+timestamp = datetime.datetime.now().isoformat()
+output = {
+    'timestamp': timestamp,
+    'results': {k: [dict(r) for r in v] for k, v in results.items()}
+}
+
+with open('evaluation_results.json', 'w') as f:
+    json.dump(output, indent=2)
+
+print(json.dumps(output, indent=2))
+"
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-evaluation-results
+          path: evaluation_results.json
+          retention-days: 30
+
+  # ============================================
+  # Weekly Learning Update
+  # ============================================
+  weekly-learning:
+    name: Weekly Learning Update
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Update learning from task history
+        run: |
+          python -c "
+from orchestrator.learning import create_preference_learner
+from orchestrator.task_store import get_task_store
+from orchestrator.router import TaskComplexity
+from orchestrator.learning import FeedbackRecord, FeedbackType
+from orchestrator.task_store import get_task_store
+from pathlib import Path
+import uuid
+from datetime import datetime
+
+learner = create_preference_learner(Path('learning.db'))
+store = get_task_store()
+
+# Get all tasks with approval status
+tasks = store.list_all()
+print(f'Found {len(tasks)} tasks in store')
+
+feedback_count = 0
+for task in tasks:
+    if task.approval_status in ('approved', 'rejected', 'revisions_requested'):
+        from orchestrator.learning import FeedbackRecord, FeedbackType, TaskComplexity
+        from datetime import datetime
+        import uuid
+        
+        # Determine complexity from task (simplified)
+        complexity = TaskComplexity.STANDARD  # Default, could be improved
+        
+        feedback = FeedbackRecord(
+            id=str(uuid.uuid4())[:8],
+            task_id=task.id,
+            task_description=task.description,
+            complexity=TaskComplexity.STANDARD,
+            pipeline_config={},
+            feedback_type=FeedbackType.APPROVE if task.approval_status == 'approved' else FeedbackType.REJECT,
+            feedback_notes=task.approval_notes or '',
+            timestamp=task.updated_at,
+            pipeline_duration_ms=0,
+            context_tokens=0,
+            success=task.approval_status == 'approved'
+        )
+        learner.record_feedback(feedback)
+        feedback_count += 1
+
+print(f'Processed {feedback_count} feedback records')
+stats = learner.get_stats()
+print(f'Learning stats: {stats}')
+
+# Save updated database
+import shutil
+shutil.copy('learning.db', 'learning_updated.db')
+"
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Upload updated learning database
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-database
+          path: learning_updated.db
+          retention-days: 90
+
+      - name: Upload learning stats
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-stats
+          path: |
+            echo '${{ steps.learning.outputs.stats }}' > learning_stats.json
+            echo 'learning_stats.json'
+        # We'll save stats differently
+        run: |
+          python -c "
+from orchestrator.learning import create_preference_learner
+from pathlib import Path
+learner = create_preference_learner(Path('learning.db'))
+stats = learner.get_stats()
+import json
+Path('learning_stats.json').write_text(json.dumps(stats, indent=2))
+"
+          - uses: actions/upload-artifact@v4
+            with:
+              name: learning-stats
+              path: learning_stats.json
+              retention-days: 90
+
+  # ============================================
+  # Pipeline Optimization
+  # ============================================
+  pipeline-optimization:
+    name: Pipeline Optimization
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.force_rebuild == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+
+      - name: Run pipeline optimization analysis
+        run: |
+          python -c "
+from orchestrator.learning import create_preference_learner, AdaptivePipeline
+from pathlib import Path
+import json
+
+learner = create_preference_learner(Path('learning.db'))
+pipeline = AdaptivePipeline(learner)
+
+# Generate optimization report
+report = {
+    'timestamp': datetime.datetime.now().isoformat(),
+    'optimizations': {},
+    'stats': learner.get_stats(),
+}
+
+for complexity in ['trivial', 'simple', 'standard', 'complex']:
+    from orchestrator.router import TaskComplexity
+    opt = learner.get_optimization(TaskComplexity(complexity))
+    if opt:
+        report['optimizations'][complexity] = {
+            'use_repomix': opt.use_repomix,
+            'reserve_tokens': opt.reserve_tokens,
+            'skip_round2': opt.skip_round2,
+            'skip_red_team': opt.skip_red_team,
+            'builder_max_tokens': opt.builder_max_tokens,
+            'analyst_max_tokens': opt.analyst_max_tokens,
+            'strategist_max_tokens': opt.strategist_max_tokens,
+            'confidence': opt.confidence,
+            'updated_at': opt.updated_at,
+        }
+
+with open('pipeline_optimization_report.json', 'w') as f:
+    json.dump(report, f, indent=2)
+
+print(json.dumps(report, indent=2))
+"
+        env:
+          MINISTRAL_BASE_URL: ${{ secrets.MINISTRAL_BASE_URL }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Upload optimization report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-optimization-report
+          path: pipeline_optimization_report.json
+          retention-days: 90
+
+  # ============================================
+  # Notify
+  # ============================================
+  notify:
+    name: Notify Team
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [daily-evaluation, weekly-learning, pipeline-optimization]
+    steps:
+      - name: Send notification
+        run: |
+          echo "Workflow complete. Check artifacts for results."
+          # Add Slack/Discord/Email notification here

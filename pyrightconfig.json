@@ -1,0 +1,9 @@
+{
+  "exclude": [
+    "venv",
+    "**/__pycache__",
+    "models",
+    "tasks",
+    "node_modules"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "excludedPaths": [
+    "Downloads",
+    "pycharm-2026.1.4",
+    "Apex_oracle_bot",
+    "bot_doctor",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "tasks",
+    "*.pyc",
+    "*.pyo"
+  ]
+}

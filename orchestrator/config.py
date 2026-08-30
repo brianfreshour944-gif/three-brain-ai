@@ -19,6 +19,12 @@ LOGS_DIR = os.getenv("LOGS_DIR", str(BASE_DIR / "logs"))
 MINISTRAL_BASE_URL = os.getenv("MINISTRAL_BASE_URL", "http://localhost:8001/v1")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "http://localhost:8002/v1")
 
+# Ensure V1 API prefix for llama.cpp OpenAI-compatible endpoint
+if not MINISTRAL_BASE_URL.endswith('/v1'):
+    MINISTRAL_BASE_URL = MINISTRAL_BASE_URL.rstrip('/') + '/v1'
+if not DEEPSEEK_BASE_URL.endswith('/v1'):
+    DEEPSEEK_BASE_URL = DEEPSEEK_BASE_URL.rstrip('/') + '/v1'
+
 # Model names
 MINISTRAL_MODEL = os.getenv("MINISTRAL_MODEL", "ministral")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek")
