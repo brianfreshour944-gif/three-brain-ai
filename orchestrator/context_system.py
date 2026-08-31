@@ -174,6 +174,28 @@ class ContextBuilder:
         if memory_summary != "No project memory yet.":
             parts.append(f"\n# PROJECT MEMORY\n{memory_summary}")
 
+        # Trading performance stats (real, pre-computed — never ask the LLM
+        # to calculate Sharpe/drawdown/etc. itself, they are unreliable at
+        # multi-step arithmetic; always feed the already-computed numbers in).
+        try:
+            import sys
+            sys.path.insert(0, "/home/ubuntu/Apex_oracle_bot/src")
+            from db import get_latest_experiment_stats
+            stats = get_latest_experiment_stats()
+            if stats:
+                stats_text = (
+                    f"Experiment: {stats['experiment_id']}\n"
+                    f"Sharpe ratio: {stats['sharpe']:.2f}\n"
+                    f"Max drawdown: {stats['max_drawdown_pct']:.1f}%\n"
+                    f"Total return: {stats['total_return_pct']:.1f}%\n"
+                    f"Profit factor: {stats['profit_factor']:.2f}\n"
+                    f"Status: {stats['status']}\n"
+                    f"Computed at: {stats['computed_at']}"
+                )
+                parts.append(f"\n# LATEST TRADING PERFORMANCE STATS (pre-computed, treat as fact)\n{stats_text}")
+        except Exception:
+            pass  # non-fatal: proceed without stats if unavailable
+
         # Relevant files (explicit)
         if relevant_files:
             parts.append("\n# RELEVANT FILES")

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Message(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = None
 
 
 class ChatCompletionRequest(BaseModel):
