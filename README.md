@@ -6,185 +6,136 @@ A local-first AI engineering assistant that uses three specialized LLMs to analy
 
 | Agent | Role | Model | Endpoint |
 |-------|------|-------|----------|
-| **Builder** | Creates solutions, proposes architecture | Ministral (GGUF) | Local llama.cpp:8001 |
-| **Analyst** | Finds flaws, critiques, suggests improvements | DeepSeek (GGUF) | Local llama.cpp:8002 |
-| **Strategist** | Final architecture decisions, implementation plans | Claude 3.5 Sonnet | OpenRouter (cloud) |
-| **Red Team** | Security review (optional) | Claude 3.5 Sonnet | OpenRouter (cloud) |
+| **Builder** | Creates solutions, proposes architecture | Ministral 7B (GGUF) | Kaggle GPU 0 → FRP → Oracle :7001 |
+| **Analyst** | Finds flaws, critiques, suggests improvements | DeepSeek 7B (GGUF) | Kaggle GPU 1 → FRP → Oracle :7002 |
+| **Strategist** | Final architecture decisions, implementation plans | Nemotron 3 Ultra (free) | OpenRouter (cloud) |
+| **Red Team** (optional) | Security review | Nemotron 3 Ultra (free) | OpenRouter (cloud) |
 
-## Flow
+## Infrastructure Overview
 
 ```
-User Task
-    │
-    ▼
-┌─────────────────────┐
-│ Context Manager     │ ← Project memory, relevant files
-└─────────┬───────────┘
-          │
-    ┌─────┴─────┐
-    ▼           ▼
-Builder     Analyst
-(Parallel)  (Parallel)
-    │           │
-    └─────┬─────┘
-          ▼
-    Strategist
-          │
-          ▼
-    Red Team (optional)
-          │
-          ▼
-    Human Approval
-          │
-          ▼
-┌─────────────────────┐
-│ FINAL_IMPLEMENTATION_PLAN.md │ → JetBrains AI / opencode consumes this
-└─────────────────────┘
+┌─────────────┐     Tailscale      ┌─────────────┐     FRP Tunnel      ┌─────────────┐
+│   Your PC   │ ◄─────────────────► │  Oracle VM  │ ◄─────────────────► │  Kaggle     │
+│  (RDP/SSH)  │   100.113.214.63   │  (always on)│   ports 7000-7002   │  (2×T4 GPU) │
+└─────────────┘                     └─────────────┘                     └─────────────┘
+       │                                    │                                    │
+       │ JetBrains Air                      │ Orchestrator API                  │ llama.cpp
+       │ IDE                                │ Port 8005                         │ Ports 8001/8002
+       ▼                                    ▼                                    ▼
+   Implementation                     Planning                          Model Serving
 ```
+
+### Why Two Tunnel Tools?
+
+| Connection | Tool | Reason |
+|------------|------|--------|
+| PC ↔ Oracle (RDP) | **Tailscale** | Works great; PC isn't sandboxed. Keeps RDP private. |
+| Oracle ↔ Kaggle (LLM) | **FRP** | Tailscale gets killed by Kaggle's sandbox (~5s). FRP survives. |
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Oracle VM Setup (One-time)
 
 ```bash
+# Clone repo
+git clone https://github.com/brianfreshour944-gif/three-brain-ai.git
 cd three-brain-ai
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-pip install -e ".[dev]"
-```
 
-### 2. Start Local LLM Servers
-
-**Terminal 1 - Ministral (Builder):**
-```bash
-./llama-server \
-  -m /path/to/models/ministral.gguf \
-  -ngl 999 \
-  -c 8192 \
-  --host 127.0.0.1 \
-  --port 8001
-```
-
-**Terminal 2 - DeepSeek (Analyst):**
-```bash
-./llama-server \
-  -m /path/to/models/deepseek.gguf \
-  -ngl 999 \
-  -c 8192 \
-  --host 127.0.0.1 \
-  --port 8002
-```
-
-### 3. Configure Environment
-
-```bash
+# Configure environment
 cp .env.example .env
 # Edit .env with your OPENROUTER_API_KEY
+
+# Install FRP server (see oracle/frps.toml)
+sudo cp oracle/frps.toml /home/ubuntu/frp_0.61.1_linux_arm64/frps.toml
+sudo cp oracle/frps.service /etc/systemd/system/frps.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now frps
+
+# Open firewall ports (Oracle Cloud Console + iptables)
+sudo iptables -I INPUT -p tcp --dport 7000 -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 7001 -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 7002 -j ACCEPT
+# Make iptables persistent:
+sudo apt-get install -y iptables-persistent
+
+# Start orchestrator
+docker compose up -d
 ```
 
-### 4. Initialize in Your Project
+### 2. Kaggle Notebook (Every Session)
+
+1. **Attach datasets** in Kaggle sidebar:
+   - `brianfreshour/trading-bot-llms` (models)
+   - `brianfreshour/trading-bot-wheels` (dependencies)
+
+2. **Run the startup script** (copy from `kaggle/startup.py`):
+   ```bash
+   # In Kaggle notebook cell:
+   !python3 /kaggle/working/startup.py
+   ```
+
+3. **Verify** from Oracle:
+   ```bash
+   curl http://127.0.0.1:7001/v1/models
+   curl http://127.0.0.1:7002/v1/models
+   ```
+
+### 3. Run a Task
 
 ```bash
-cd /path/to/your/project
-three-brain init
+# From your project directory
+three-brain run "Add retry mechanism with exponential backoff to the API client"
+
+# Or via API
+curl -X POST http://oracle:8005/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Add retry mechanism...", "auto_approve": false}'
 ```
 
-### 5. Run a Task
-
-```bash
-three-brain run "Add a retry mechanism with exponential backlog to the API client"
-```
-
-### 6. Review and Approve
-
-```bash
-# Check status
-three-brain status
-
-# Approve
-three-brain approve <task_id> --notes "Looks good, implement it"
-
-# Or reject
-three-brain reject <task_id> --notes "Need different approach"
-
-# Or request revisions
-three-brain revise <task_id> --notes "Add more error handling"
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `three-brain run "task"` | Run task through pipeline |
-| `three-brain status [task_id]` | Check task status |
-| `three-brain approve <id>` | Approve task |
-| `three-brain reject <id>` | Reject task |
-| `three-brain revise <id>` | Request revisions |
-| `three-brain memory` | View/manage project memory |
-| `three-brain safety <file>` | Run safety checks |
-| `three-brain health` | Check LLM endpoints |
-| `three-brain init` | Initialize in project |
-
-## Output
-
-The system produces a structured `FINAL_IMPLEMENTATION_PLAN.md` that can be consumed by:
-- **JetBrains AI Assistant** - Paste the plan, let it implement
-- **opencode** - Feed the plan as context
-- **Manual implementation** - Follow the step-by-step plan
-
-## Safety Layer
-
-Before any code execution:
-- Syntax validation
-- Import analysis (blocks dangerous modules)
-- Path traversal prevention
-- Secret detection
-- Protected file guarding (requires explicit approval)
-- Human approval gate (configurable)
-
-## Project Memory
-
-The system maintains persistent memory across sessions:
-- User preferences
-- Architecture decisions
-- Lessons learned
-- Decision log with rationale
-
-## Requirements
-
-- Python 3.10+
-- llama.cpp server with CUDA (for local models)
-- Ministral GGUF model (~7B params)
-- DeepSeek GGUF model (~7B params)
-- OpenRouter API key (for Strategist/Red Team)
-
-## Directory Structure
+## Repository Structure
 
 ```
 three-brain-ai/
-├── agents/
-│   ├── __init__.py
-│   └── llm_client.py
-├── orchestrator/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── main.py
-│   ├── context_manager.py
-│   ├── memory.py
-│   ├── task_store.py
-│   ├── router.py
-│   └── safety.py
-├── prompts/
-│   ├── __init__.py
-│   ├── builder.py
-│   ├── analyst.py
-│   ├── strategist.py
-│   └── red_team.py
-├── memory/           # Project memory (created at runtime)
-├── tasks/            # Task storage (created at runtime)
-├── logs/             # Logs (created at runtime)
-├── cli.py
-├── pyproject.toml
-├── .env.example
-└── README.md
+├── README.md                    # This file
+├── .env.example                 # Orchestrator environment template
+├── docker-compose.yml           # Orchestrator + dependencies (no LLMs)
+├── pyproject.toml               # Python package config
+├── orchestrator/                # Core orchestration logic
+│   ├── main.py                  # ThreeBrainOrchestrator
+│   ├── config.py                # Configuration
+│   ├── context_system.py        # Context building + Repomix caching
+│   ├── memory.py                # Project memory (cached)
+│   ├── router.py                # Task complexity classification
+│   ├── safety/                  # Safety checks (async)
+│   └── ...
+├── kaggle/
+│   └── startup.py               # Kaggle notebook startup script
+├── oracle/
+│   ├── frps.toml                # FRP server config
+│   └── frps.service             # systemd service
+└── three_brain_ai/
+    └── cli.py                   # CLI entry point
 ```
+
+## Key Features
+
+- **Connection pooling** - Shared HTTP/2 connections to LLM endpoints
+- **Repomix caching** - File-mtime-based cache avoids re-packing repo context
+- **Smart routing** - 4 complexity levels (trivial/simple/standard/complex) route to appropriate pipeline
+- **Async safety checks** - Non-blocking syntax/import/secret/scope validation
+- **Memory caching** - Project memory cached with mtime invalidation
+- **Pre-compiled regex** - Router patterns compiled at module load
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENROUTER_API_KEY` | Required for Strategist/Red Team | - |
+| `MINISTRAL_BASE_URL` | Builder endpoint | `http://127.0.0.1:7001/v1` |
+| `DEEPSEEK_BASE_URL` | Analyst endpoint | `http://127.0.0.1:7002/v1` |
+| `STRATEGIST_MODEL` | OpenRouter model | `openrouter/nemotron-3-ultra-free` |
+| `REQUIRE_APPROVAL` | Human approval gate | `true` |
+
+## License
+
+MIT

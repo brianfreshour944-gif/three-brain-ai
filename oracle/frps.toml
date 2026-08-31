@@ -1,0 +1,29 @@
+# FRP Server Configuration (frps.toml)
+# Place at: /home/ubuntu/frp_0.61.1_linux_arm64/frps.toml
+# Run as systemd service: sudo systemctl enable --now frps
+
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# Authentication — MUST match frpc.toml on Kaggle
+auth.method = "token"
+auth.token = "e89f57ebe5b240fbbac79265911305b4"
+
+# Dashboard (optional, for monitoring)
+webServer.addr = "0.0.0.0"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "changeme"  # Change this!
+
+# Logging
+log.to = "./frps.log"
+log.level = "info"
+log.maxDays = 3
+
+# Transport
+transport.heartbeatInterval = 10
+transport.heartbeatTimeout = 90
+
+# Proxy limits (prevent abuse)
+proxy.maxPoolCount = 100
+proxy.maxPortsPerClient = 10

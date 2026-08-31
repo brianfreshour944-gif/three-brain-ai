@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import sys
@@ -118,8 +119,80 @@ class TestRunner:
         self.suites.append(suite)
         return suite
     
+    async def run_suite_async(self, name: str, tests: List[callable]) -> TestSuiteResult:
+        """Run a suite of tests asynchronously (CPU-bound tests in thread pool)."""
+        import time
+        suite = TestSuiteResult(name=name)
+        suite.start_time = time.time()
+        
+        loop = asyncio.get_event_loop()
+        
+        for test_fn in tests:
+            test_name = test_fn.__name__
+            start = time.time()
+            try:
+                # Run CPU-bound test in thread pool
+                result = await loop.run_in_executor(None, test_fn)
+                duration = (time.time() - start) * 1000
+                
+                if isinstance(result, tuple):
+                    status, message = result
+                elif isinstance(result, bool):
+                    status = TestStatus.PASSED if result else TestStatus.FAILED
+                    message = ""
+                else:
+                    status = TestStatus.PASSED
+                    message = str(result)
+                
+                suite.results.append(TestResult(
+                    name=test_name,
+                    status=status,
+                    message=message,
+                    duration_ms=duration,
+                ))
+            except Exception as e:
+                duration = (time.time() - start) * 1000
+                suite.results.append(TestResult(
+                    name=test_name,
+                    status=TestStatus.ERROR,
+                    message=str(e),
+                    duration_ms=duration,
+                ))
+        
+        suite.end_time = time.time()
+        self.suites.append(suite)
+        return suite
+    
     def run_all(self) -> Dict[str, Any]:
         """Run all registered test suites."""
+        return {
+            "suites": [
+                {
+                    "name": s.name,
+                    "passed": s.passed,
+                    "failed": s.failed,
+                    "skipped": s.skipped,
+                    "errors": s.errors,
+                    "total": s.total,
+                    "success_rate": s.success_rate,
+                    "duration_ms": s.duration_ms,
+                    "tests": [
+                        {
+                            "name": r.name,
+                            "status": r.status.value,
+                            "message": r.message,
+                            "duration_ms": r.duration_ms,
+                        }
+                        for r in s.results
+                    ]
+                }
+                for s in self.suites
+            ],
+            "summary": self._summary(),
+        }
+    
+    async def run_all_async(self) -> Dict[str, Any]:
+        """Run all registered test suites asynchronously."""
         return {
             "suites": [
                 {
@@ -184,8 +257,33 @@ def run_pytest(project_root: Path, args: Optional[List[str]] = None) -> tuple[bo
         return False, str(e)
 
 
+async def run_pytest_async(project_root: Path, args: Optional[List[str]] = None) -> tuple[bool, str]:
+    """Run pytest on the project asynchronously."""
+    if args is None:
+        args = ["-v", "--tb=short"]
+    
+    loop = asyncio.get_event_loop()
+    try:
+        cmd = [sys.executable, "-m", "pytest"] + args
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=project_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            return process.returncode == 0, (stdout + stderr).decode()
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return False, "Test timeout (300s)"
+    except Exception as e:
+        return False, str(e)
+
+
 def run_safety_checks(project_root: Path) -> tuple[bool, Dict[str, Any]]:
-    """Run all safety checks on the project."""
+    """Run all safety checks on the project (synchronous)."""
     from orchestrator.safety import (
         check_directory_syntax,
         check_directory_imports,
@@ -223,6 +321,50 @@ def run_safety_checks(project_root: Path) -> tuple[bool, Dict[str, Any]]:
     return all_passed, results
 
 
+async def run_safety_checks_async(project_root: Path) -> tuple[bool, Dict[str, Any]]:
+    """Run all safety checks on the project asynchronously (in thread pool)."""
+    from orchestrator.safety import (
+        check_directory_syntax,
+        check_directory_imports,
+        check_directory_secrets,
+        check_directory_scope,
+    )
+    
+    loop = asyncio.get_event_loop()
+    
+    # Run all checks concurrently in thread pool
+    syntax_task = loop.run_in_executor(None, check_directory_syntax, project_root)
+    imports_task = loop.run_in_executor(None, check_directory_imports, project_root)
+    secrets_task = loop.run_in_executor(None, check_directory_secrets, project_root)
+    scope_task = loop.run_in_executor(None, check_directory_scope, project_root)
+    
+    results = {}
+    all_passed = True
+    
+    # Wait for all checks
+    syntax_valid, syntax_errors = await syntax_task
+    results["syntax"] = {"passed": syntax_valid, "errors": syntax_errors}
+    if not syntax_valid:
+        all_passed = False
+    
+    imports_valid, imports_errors = await imports_task
+    results["imports"] = {"passed": imports_valid, "errors": imports_errors}
+    if not imports_valid:
+        all_passed = False
+    
+    secrets_valid, secrets_errors = await secrets_task
+    results["secrets"] = {"passed": secrets_valid, "errors": secrets_errors}
+    if not secrets_valid:
+        all_passed = False
+    
+    scope_valid, scope_errors = await scope_task
+    results["scope"] = {"passed": scope_valid, "errors": scope_errors}
+    if not scope_valid:
+        all_passed = False
+    
+    return all_passed, results
+
+
 def run_all_tests(project_root: Path) -> Dict[str, Any]:
     """Run all tests including pytest and safety checks."""
     runner = TestRunner(project_root)
@@ -232,6 +374,26 @@ def run_all_tests(project_root: Path) -> Dict[str, Any]:
     
     # Pytest
     pytest_passed, pytest_output = run_pytest(project_root)
+    
+    return {
+        "safety": safety_results,
+        "pytest": {
+            "passed": pytest_passed,
+            "output": pytest_output,
+        },
+        "overall_passed": safety_passed and pytest_passed,
+    }
+
+
+async def run_all_tests_async(project_root: Path) -> Dict[str, Any]:
+    """Run all tests including pytest and safety checks asynchronously."""
+    runner = TestRunner(project_root)
+    
+    # Safety checks (async)
+    safety_passed, safety_results = await run_safety_checks_async(project_root)
+    
+    # Pytest (async)
+    pytest_passed, pytest_output = await run_pytest_async(project_root)
     
     return {
         "safety": safety_results,
