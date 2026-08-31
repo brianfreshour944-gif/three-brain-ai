@@ -157,8 +157,54 @@ class RedTeamAgent(BaseAgent):
         )
 
 
+async def _kaggle_backends_available() -> bool:
+    """Check if Ministral/DeepSeek (via the FRP tunnel to Kaggle) are
+    actually reachable right now. Used to auto-decide whether to use the
+    full 3-brain committee or fall back to OpenRouter-only, with no
+    manual prompt needed each session.
+    """
+    from agents.llm_client import create_ministral_client, create_deepseek_client
+    try:
+        async with create_ministral_client() as client:
+            ministral_ok = await client.health_check()
+    except Exception:
+        ministral_ok = False
+    try:
+        async with create_deepseek_client() as client:
+            deepseek_ok = await client.health_check()
+    except Exception:
+        deepseek_ok = False
+    return ministral_ok and deepseek_ok
+
+
+async def create_all_agents_auto() -> Dict[str, BaseAgent]:
+    """Auto-detect whether the Kaggle-backed local models are reachable.
+    If yes: full 3-brain committee (Builder=Ministral, Analyst=DeepSeek,
+    Strategist=OpenRouter). If no: OpenRouter-only fallback for all three
+    roles, so tasks can still run even when Kaggle is not started.
+    """
+    if await _kaggle_backends_available():
+        logger.info("Kaggle tunnel detected — using full 3-brain committee.")
+        return create_all_agents()
+    else:
+        logger.warning(
+            "Kaggle tunnel not reachable (Ministral/DeepSeek offline) — "
+            "falling back to OpenRouter-only for all roles. Start your "
+            "Kaggle session to restore the free local models."
+        )
+        return {
+            "builder": OpenRouterAgent(),
+            "analyst": OpenRouterAgent(),
+            "strategist": OpenRouterAgent(),
+        }
+
+
 def create_all_agents() -> Dict[str, BaseAgent]:
-    """Factory to create all three agents."""
+    """Factory to create all three agents (always uses Kaggle-backed models
+    regardless of reachability -- use create_all_agents_auto() for the
+    auto-detecting version instead, unless you specifically want this
+    unconditional behavior).
+    """
     return {
         "builder": MinistralAgent(),
         "analyst": DeepSeekAgent(),

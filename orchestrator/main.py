@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agents import MinistralAgent, DeepSeekAgent, OpenRouterAgent, RedTeamAgent, create_all_agents
+from agents import MinistralAgent, DeepSeekAgent, OpenRouterAgent, RedTeamAgent, create_all_agents, create_all_agents_auto
 from agents.llm_client import LLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client
 from orchestrator.config import REQUIRE_APPROVAL
 from orchestrator.context_manager import ContextManager, TaskContext
@@ -62,11 +62,16 @@ class ThreeBrainOrchestrator:
             self.strategist = agents.get("strategist")
             self.red_team = agents.get("red_team")
         else:
+            # Defer Kaggle-reachability detection to run_task() (async),
+            # since __init__ itself is synchronous and cannot await.
+            # Start with the assumption Kaggle IS available; run_task()
+            # will auto-correct to OpenRouter-only on its first call if not.
             all_agents = create_all_agents()
             self.builder = all_agents["builder"]
             self.analyst = all_agents["analyst"]
             self.strategist = all_agents["strategist"]
             self.red_team = RedTeamAgent() if enable_red_team else None
+            self._agents_need_auto_check = True
 
     async def check_llm_health(self) -> Dict[str, bool]:
         """Check health of all LLM endpoints."""
@@ -104,6 +109,14 @@ class ThreeBrainOrchestrator:
         auto_approve: bool = False,
     ) -> OrchestrationResult:
         """Run a task through the appropriate pipeline based on complexity."""
+        # First real async opportunity to check Kaggle reachability and
+        # auto-swap to OpenRouter-only if the tunnel isn't up.
+        if getattr(self, "_agents_need_auto_check", False):
+            auto_agents = await create_all_agents_auto()
+            self.builder = auto_agents["builder"]
+            self.analyst = auto_agents["analyst"]
+            self.strategist = auto_agents["strategist"]
+            self._agents_need_auto_check = False
 
         # Create task
         task = self.task_store.create(
