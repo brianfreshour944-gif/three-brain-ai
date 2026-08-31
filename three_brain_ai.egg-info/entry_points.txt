@@ -1,2 +1,0 @@
-[console_scripts]
-three-brain = three_brain_ai.cli:main

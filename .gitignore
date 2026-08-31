@@ -1,9 +1,48 @@
-.env
-venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-models/
-.env*
-!.env.example
-learning.db
-*.db
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+three_brain_ai.egg-info/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (keep .env.example)
+.env
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+memory/
+tasks/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Linter
+.ruff_cache/
+.mypy_cache/
+
+# Docker
+docker-compose.override.yml

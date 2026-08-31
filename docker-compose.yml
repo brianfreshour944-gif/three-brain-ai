@@ -1,96 +1,16 @@
-# Three-Brain AI Orchestrator - Docker Deployment for Coolify
-# 
+# Three-Brain AI Orchestrator — Docker Compose
+# Runs on Oracle VM. LLMs run on Kaggle via FRP tunnel.
+#
 # Usage:
-# 1. Create a new project in Coolify
-# 2. Add a "Docker Compose" resource pointing to this file
-# 3. Set environment variables in Coolify UI
-# 4. Deploy
+#   docker compose up -d
+#
+# Environment variables set in .env file (copy from .env.example)
 
 version: '3.8'
 
 services:
   # ============================================================
-  # MINISTRAL - Builder Agent (Port 8001)
-  # ============================================================
-  ministral:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
-    container_name: three-brain-ministral
-    restart: unless-stopped
-    command: >
-      -m /models/ministral.gguf
-      -ngl 999
-      -c 8192
-      --host 0.0.0.0
-      --port 8001
-      --flash-attn
-      --ctx-size 8192
-      --parallel 4
-    ports:
-      - "8001:8001"
-    volumes:
-      - ./models:/models:ro
-      - ministral_cache:/cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ============================================================
-  # DEEPSEEK - Analyst Agent (Port 8002)
-  # ============================================================
-  deepseek:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
-    container_name: three-brain-deepseek
-    restart: unless-stopped
-    command: >
-      -m /models/deepseek.gguf
-      -ngl 999
-      -c 8192
-      --host 0.0.0.0
-      --port 8002
-      --flash-attn
-      --ctx-size 8192
-      --parallel 4
-    ports:
-      - "8002:8002"
-    volumes:
-      - ./models:/models:ro
-      - deepseek_cache:/cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ============================================================
-  # ORCHESTRATOR - Three-Brain API Server (Port 8005)
+  # ORCHESTRATOR — Three-Brain API Server (Port 8005)
   # ============================================================
   orchestrator:
     build:
@@ -101,23 +21,27 @@ services:
     ports:
       - "8005:8005"
     environment:
-      # Model endpoints (internal Docker network)
-      - MINISTRAL_BASE_URL=http://ministral:8001/v1
-      - DEEPSEEK_BASE_URL=http://deepseek:8002/v1
-      # OpenRouter (set in Coolify UI)
+      # Model endpoints (via FRP tunnel on Oracle localhost)
+      - MINISTRAL_BASE_URL=http://127.0.0.1:7001/v1
+      - DEEPSEEK_BASE_URL=http://127.0.0.1:7002/v1
+      # OpenRouter (set in .env or Coolify UI)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - STRATEGIST_MODEL=anthropic/claude-3.5-sonnet
-      # Model names (as served by llama.cpp)
-      - MINISTRAL_MODEL=ministral
-      - DEEPSEEK_MODEL=deepseek
+      - STRATEGIST_MODEL=openrouter/nemotron-3-ultra-free
+      # Model names (as served by llama.cpp on Kaggle)
+      - MINISTRAL_MODEL=mistral-7b-instruct-v0.1.Q4_K_M
+      - DEEPSEEK_MODEL=deepseek-coder-7b-instruct-v1.5.Q4_K_M
       # Temperatures
       - BUILDER_TEMP=0.3
       - ANALYST_TEMP=0.2
       - STRATEGIST_TEMP=0.1
       # Context windows
-      - MINISTRAL_CTX=8192
-      - DEEPSEEK_CTX=8192
+      - MINISTRAL_CTX=4096
+      - DEEPSEEK_CTX=4096
       - STRATEGIST_CTX=200000
+      # Max completion tokens
+      - MINISTRAL_MAX_TOKENS=2048
+      - DEEPSEEK_MAX_TOKENS=2048
+      - STRATEGIST_MAX_TOKENS=8192
       # Safety
       - REQUIRE_APPROVAL=true
       - BLOCKED_PATHS=.env,*.key,*.pem,secrets/,credentials/
@@ -130,13 +54,8 @@ services:
       - ./tasks:/app/tasks
       - ./memory:/app/memory
       - ./logs:/app/logs
-    depends_on:
-      ministral:
-        condition: service_healthy
-      deepseek:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -147,9 +66,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ============================================================
+  # OPTIONAL: JetBrains Air (if running on Oracle)
+  # ============================================================
+  # jetbrains-air:
+  #   image: jetbrains/air:latest
+  #   container_name: three-brain-air
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./projects:/home/user/projects
+  #   environment:
+  #     - AIR_LICENSE=${AIR_LICENSE}
+
 volumes:
-  ministral_cache:
-  deepseek_cache:
   tasks:
   memory:
   logs:

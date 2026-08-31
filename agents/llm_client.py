@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import httpx
 from pydantic import BaseModel, Field
@@ -19,28 +19,13 @@ class Message(BaseModel):
     content: str
 
 
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[Message]
-    temperature: float = 0.3
-    max_tokens: int = 4096
-    top_p: float = 0.9
-    stream: bool = False
-
-
-class ChatCompletionChoice(BaseModel):
-    message: Message
-    finish_reason: str = "stop"
-    index: int = 0
-
-
 class UsageDetails(BaseModel):
     """Token usage details - handles OpenRouter's nested objects."""
     cached_tokens: Optional[int] = None
     audio_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None
     video_tokens: Optional[int] = None
-    # Allow extra fields for future compatibility
+
     class Config:
         extra = "allow"
 
@@ -49,7 +34,7 @@ class CostDetails(BaseModel):
     """Cost details from OpenRouter."""
     upstream_inference_cost: Optional[float] = None
     upstream_completions_cost: Optional[float] = None
-    # Allow extra fields
+
     class Config:
         extra = "allow"
 
@@ -62,16 +47,22 @@ class Usage(BaseModel):
     prompt_tokens_details: Optional[UsageDetails] = None
     completion_tokens_details: Optional[UsageDetails] = None
     cost_details: Optional[CostDetails] = None
-    # Allow extra fields for future compatibility
+
     class Config:
         extra = "allow"
+
+
+class ChatCompletionChoice(BaseModel):
+    message: Message
+    finish_reason: str = "stop"
+    index: int = 0
 
 
 class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionChoice]
     model: str
     usage: Optional[Usage] = None
-    # Some providers might return extra fields
+
     class Config:
         extra = "allow"
 
@@ -86,56 +77,97 @@ class LLMConfig:
     timeout: int = 120
 
 
-class ChatCompletionChoice(BaseModel):
-    message: Message
-    finish_reason: str = "stop"
-    index: int = 0
+class LLMClientPool:
+    """Singleton pool of HTTP clients per endpoint/model combination."""
 
+    _instances: Dict[str, "LLMClientPool"] = {}
+    _locks: Dict[str, asyncio.Lock] = {}
+    _global_lock = asyncio.Lock()
 
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[Message]
-    temperature: float = 0.3
-    max_tokens: int = 4096
-    top_p: float = 0.9
-    stream: bool = False
+    def __new__(cls, config: LLMConfig):
+        key = f"{config.base_url.rstrip('/')}:{config.model}"
+        if key not in cls._instances:
+            cls._instances[key] = super().__new__(cls)
+        return cls._instances[key]
 
+    def __init__(self, config: LLMConfig):
+        if hasattr(self, '_initialized'):
+            return
+        self.config = config
+        self._client: Optional[httpx.AsyncClient] = None
+        self._init_lock = asyncio.Lock()
+        self._initialized = True
 
-class ChatCompletionChoice(BaseModel):
-    message: Message
-    finish_reason: str = "stop"
-    index: int = 0
+    @classmethod
+    def _get_lock(cls, key: str) -> asyncio.Lock:
+        if key not in cls._locks:
+            cls._locks[key] = asyncio.Lock()
+        return cls._locks[key]
+
+    async def get_client(self) -> httpx.AsyncClient:
+        """Get or create shared HTTP client with connection pooling."""
+        if self._client is not None and not self._client.is_closed:
+            return self._client
+
+        async with self._init_lock:
+            if self._client is not None and not self._client.is_closed:
+                return self._client
+
+            headers = {"Content-Type": "application/json"}
+            if self.config.api_key and self.config.api_key != "dummy":
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
+
+            limits = httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=300.0,
+            )
+
+            self._client = httpx.AsyncClient(
+                base_url=self.config.base_url.rstrip("/"),
+                timeout=httpx.Timeout(self.config.timeout, connect=10.0),
+                headers=headers,
+                limits=limits,
+                http2=True,
+                follow_redirects=True,
+            )
+            logger.debug(
+                f"Created new pooled client for {self.config.base_url}:{self.config.model}"
+            )
+            return self._client
+
+    async def close(self):
+        """Close the pooled client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    @classmethod
+    async def close_all(cls):
+        """Close all pooled clients."""
+        for instance in cls._instances.values():
+            await instance.close()
+        cls._instances.clear()
 
 
 class LLMClient:
-    """Client for OpenAI-compatible APIs (llama.cpp, OpenRouter)."""
+    """Client for OpenAI-compatible APIs using shared connection pool."""
 
     def __init__(self, config: LLMConfig):
         self.config = config
-        self._client: Optional[httpx.AsyncClient] = None
+        self._pool = LLMClientPool(config)
 
     async def __aenter__(self):
-        headers = {"Content-Type": "application/json"}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-
-        self._client = httpx.AsyncClient(
-            base_url=self.config.base_url.rstrip("/"),
-            timeout=httpx.Timeout(self.config.timeout, connect=10.0),
-            headers=headers,
-        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._client:
-            await self._client.aclose()
+        pass  # Pool manages lifecycle
 
     async def health_check(self) -> bool:
         """Check if server is reachable."""
-        if not self._client:
-            return False
         try:
-            resp = await self._client.get("models", timeout=5.0)
+            client = await self._pool.get_client()
+            resp = await client.get("models", timeout=5.0)
             return resp.status_code == 200
         except Exception:
             return False
@@ -147,33 +179,38 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         stream: bool = False,
     ) -> ChatCompletionResponse:
-        """Call chat completions endpoint."""
-        if not self._client:
-            raise RuntimeError("Client not initialized. Use async context manager.")
+        """Call chat completions endpoint using pooled connection."""
+        client = await self._pool.get_client()
 
         payload = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.config.default_temperature,
+            "temperature": (
+                temperature
+                if temperature is not None
+                else self.config.default_temperature
+            ),
             "max_tokens": max_tokens or self.config.default_max_tokens,
             "top_p": 0.9,
             "stream": stream,
         }
 
         try:
-            response = await self._client.post(
+            response = await client.post(
                 "chat/completions",
                 json=payload,
             )
             response.raise_for_status()
             data = response.json()
             return ChatCompletionResponse(**data)
-        except httpx.TimeoutException:
-            raise RuntimeError("Request timed out")
+        except httpx.TimeoutException as e:
+            raise RuntimeError("Request timed out") from e
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"HTTP {e.response.status_code}: {e.response.text}")
+            raise RuntimeError(
+                f"HTTP {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"Request failed: {e}")
+            raise RuntimeError(f"Request failed: {e}") from e
 
     async def chat_completion_stream(
         self,
@@ -181,20 +218,23 @@ class LLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ):
-        """Stream chat completion."""
-        if not self._client:
-            raise RuntimeError("Client not initialized. Use async context manager.")
+        """Stream chat completion using pooled connection."""
+        client = await self._pool.get_client()
 
         payload = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.config.default_temperature,
+            "temperature": (
+                temperature
+                if temperature is not None
+                else self.config.default_temperature
+            ),
             "max_tokens": max_tokens or self.config.default_max_tokens,
             "top_p": 0.9,
             "stream": True,
         }
 
-        async with self._client.stream(
+        async with client.stream(
             "POST",
             "chat/completions",
             json=payload,
@@ -240,7 +280,7 @@ def create_openrouter_client() -> LLMClient:
     return LLMClient(LLMConfig(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
-        model=os.getenv("STRATEGIST_MODEL", "anthropic/claude-3.5-sonnet"),
+        model=os.getenv("STRATEGIST_MODEL", "openrouter/nemotron-3-ultra-free"),
         default_temperature=float(os.getenv("STRATEGIST_TEMP", "0.1")),
         default_max_tokens=int(os.getenv("STRATEGIST_MAX_TOKENS", "8192")),
     ))
