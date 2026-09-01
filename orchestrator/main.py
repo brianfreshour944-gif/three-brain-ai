@@ -118,6 +118,10 @@ class ThreeBrainOrchestrator:
             self.strategist = auto_agents["strategist"]
             self._agents_need_auto_check = False
 
+        # Sharpen a vague/rough task description into a clear, specific one
+        # before it reaches Builder/Analyst/Strategist.
+        task_description = await self._clarify_task_description(task_description)
+
         # Create task
         task = self.task_store.create(
             description=task_description,
@@ -157,6 +161,30 @@ class ThreeBrainOrchestrator:
             task.error = str(e)
             self.task_store.update(task)
             raise
+
+    async def _clarify_task_description(self, raw_description: str) -> str:
+        """Rewrite a rough/vague task description into a clear, specific one
+        using the Strategist model. Falls back to the original description
+        unchanged if clarification fails -- never blocks a task.
+        """
+        try:
+            prompt = (
+                "The user gave this rough task description for a software "
+                "engineering assistant. Rewrite it as a single clear, specific "
+                "sentence or two, preserving their original intent exactly -- "
+                "do not add scope or assumptions they didn't state. If it is "
+                "already clear, return it unchanged.\n\n"
+                f"Original: {raw_description}\n\n"
+                "Rewritten:"
+            )
+            response = await self.strategist.process(prompt, "")
+            clarified = response.content.strip() if response and response.content else ""
+            if clarified:
+                logger.info(f"Task clarified: '{raw_description}' -> '{clarified}'")
+                return clarified
+        except Exception as e:
+            logger.warning(f"Task clarification failed (non-fatal, using original): {e}")
+        return raw_description
 
     async def _run_trivial_path(
         self,
