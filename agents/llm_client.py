@@ -128,7 +128,7 @@ class LLMClientPool:
                 timeout=httpx.Timeout(self.config.timeout, connect=10.0),
                 headers=headers,
                 limits=limits,
-                http2=True,
+                http2=False,
                 follow_redirects=True,
             )
             logger.debug(
