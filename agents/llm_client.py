@@ -333,9 +333,20 @@ class FallbackLLMClient:
         except Exception as e:
             if self.fallback is None:
                 raise
-            logger.warning(f"Primary Strategist failed ({e}); falling back to local model.")
+            primary_model = self.primary.config.model
+            fallback_model = self.fallback.config.model if self.fallback else "N/A"
+            logger.warning(
+                f"Primary Strategist '{primary_model}' failed ({e.__class__.__name__}: {e}); "
+                f"falling back to '{fallback_model}'."
+            )
             self.last_used = "fallback"
-            return await self.fallback.chat_completion(*args, **kwargs)
+            result = await self.fallback.chat_completion(*args, **kwargs)
+            await _notify_discord(
+                f":warning: **Strategist fallback triggered**\n"
+                f"Primary model `{primary_model}` failed: `{e.__class__.__name__}`\n"
+                f"Fallback: `{fallback_model}` — succeeded"
+            )
+            return result
 
     async def chat_completion_stream(self, *args, **kwargs):
         try:
@@ -345,8 +356,18 @@ class FallbackLLMClient:
         except Exception as e:
             if self.fallback is None:
                 raise
-            logger.warning(f"Primary Strategist streaming failed ({e}); falling back to local model.")
+            primary_model = self.primary.config.model
+            fallback_model = self.fallback.config.model if self.fallback else "N/A"
+            logger.warning(
+                f"Primary Strategist streaming '{primary_model}' failed ({e.__class__.__name__}: {e}); "
+                f"falling back to '{fallback_model}'."
+            )
             self.last_used = "fallback"
+            await _notify_discord(
+                f":warning: **Strategist fallback triggered (streaming)**\n"
+                f"Primary `{primary_model}`: `{e.__class__.__name__}`\n"
+                f"Fallback: `{fallback_model}`"
+            )
             async for chunk in self.fallback.chat_completion_stream(*args, **kwargs):
                 yield chunk
 
@@ -379,3 +400,51 @@ def create_openrouter_client():
         ))
 
     return FallbackLLMClient(primary, fallback)
+
+
+async def _notify_discord(message: str) -> None:
+    """Send a Discord notification if DISCORD_WEBHOOK_URL is set."""
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(webhook_url, json={"content": message}, timeout=10.0)
+    except Exception as e:
+        logger.warning(f"Discord notification failed: {e}")
+
+
+def create_openrouter_client_with_fallback() -> FallbackLLMClient:
+    """Create OpenRouter Strategist with OpenRouter-to-OpenRouter fallback (GLM-4 Flash).
+
+    Unlike create_openrouter_client() which uses STRATEGIST_FALLBACK_BASE_URL for
+    a local model fallback, this always uses OpenRouter as both primary and fallback,
+    so it works even when no local model server is running.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key or api_key == "your_key_here":
+        raise ValueError("OPENROUTER_API_KEY not set in environment")
+
+    primary = LLMClient(LLMConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        model=os.getenv("STRATEGIST_MODEL", "openrouter/nemotron-3-ultra-free"),
+        default_temperature=float(os.getenv("STRATEGIST_TEMP", "0.1")),
+        default_max_tokens=int(os.getenv("STRATEGIST_MAX_TOKENS", "8192")),
+    ))
+
+    fallback_model = os.getenv("STRATEGIST_FALLBACK_MODEL", "openrouter/zhipuai-glm-4-flash")
+    fallback = LLMClient(LLMConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        model=fallback_model,
+        default_temperature=primary.config.default_temperature,
+        default_max_tokens=primary.config.default_max_tokens,
+        timeout=primary.config.timeout,
+    ))
+
+    logger.info(
+        f"OpenRouter Strategist client created: "
+        f"primary='{primary.config.model}', fallback='{fallback.config.model}'"
+    )
+    return FallbackLLMClient(primary=primary, fallback=fallback)

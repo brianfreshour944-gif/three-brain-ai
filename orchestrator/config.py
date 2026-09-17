@@ -29,6 +29,10 @@ if not DEEPSEEK_BASE_URL.endswith('/v1'):
 MINISTRAL_MODEL = os.getenv("MINISTRAL_MODEL", "ministral")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek")
 STRATEGIST_MODEL = os.getenv("STRATEGIST_MODEL", "openrouter/nemotron-3-ultra-free")
+STRATEGIST_FALLBACK_MODEL = os.getenv("STRATEGIST_FALLBACK_MODEL", "openrouter/zhipuai-glm-4-flash")
+
+# Notifications
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # Temperatures
 BUILDER_TEMP = float(os.getenv("BUILDER_TEMP", "0.3"))

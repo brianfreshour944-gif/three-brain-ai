@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agents.llm_client import LLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client
+from agents.llm_client import LLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client, create_openrouter_client_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class OpenRouterAgent(BaseAgent):
         super().__init__(
             name="OpenRouter (Strategist)",
             system_prompt=STRATEGIST_PROMPT,
-            client=client or create_openrouter_client(),
+            client=client or create_openrouter_client_with_fallback(),
         )
 
     async def process(self, task: str, context: str = "") -> AgentResponse:

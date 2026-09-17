@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents import MinistralAgent, DeepSeekAgent, OpenRouterAgent, RedTeamAgent, create_all_agents, create_all_agents_auto
-from agents.llm_client import LLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client
+from agents.llm_client import LLMClient, FallbackLLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client, create_openrouter_client_with_fallback
 from orchestrator.config import REQUIRE_APPROVAL, MINISTRAL_MAX_TOKENS, DEEPSEEK_MAX_TOKENS
 from orchestrator.context_manager import ContextManager, TaskContext
 from orchestrator.context_system import TokenCounter, create_context_builder, trim_to_tokens
