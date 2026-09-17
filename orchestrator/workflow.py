@@ -128,11 +128,11 @@ class WorkflowEngine:
             # The orchestrator handles classification internally
             if orchestrator:
                 result = await orchestrator.run_task(
-                    task_description="",
-                    user_notes="",
-                    relevant_files=[],
-                    file_contents={},
-                    auto_approve=True,
+                    task_description=task_description,
+                    user_notes=user_notes,
+                    relevant_files=relevant_files or [],
+                    file_contents=file_contents or {},
+                    auto_approve=auto_approve,
                 )
                 
                 # The orchestrator handles all stages internally
@@ -192,7 +192,7 @@ class WorkflowOrchestrator:
         task_store = get_task_store()
         task = task_store.create(
             description=task_description,
-            project_root=str(project_root) if project_root else str(Path.cwd()),
+            project_root=str(self.project_root) if self.project_root else str(Path.cwd()),
             context={"user_notes": user_notes},
         )
         
