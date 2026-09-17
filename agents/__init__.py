@@ -120,12 +120,18 @@ class OpenRouterAgent(BaseAgent):
         async with self.client as client:
             response = await client.chat_completion(messages)
 
+        used_fallback = getattr(self.client, "last_used", "primary") == "fallback"
+        agent_name = f"{self.name} [fallback]" if used_fallback else self.name
+
         content = response.choices[0].message.content
         return AgentResponse(
-            agent_name=self.name,
+            agent_name=agent_name,
             content=content,
             confidence=0.95,
-            metadata={"model": self.client.config.model}
+            metadata={
+                "model": self.client.config.model,
+                "backend": "fallback" if used_fallback else "primary",
+            }
         )
 
 

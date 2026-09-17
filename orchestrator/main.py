@@ -15,7 +15,7 @@ from orchestrator.context_manager import ContextManager, TaskContext
 from orchestrator.context_system import TokenCounter, create_context_builder, trim_to_tokens
 from orchestrator.memory import get_memory_manager
 from orchestrator.router import TaskClassifier, TaskComplexity, create_classifier
-from orchestrator.task_store import Task, TaskStore, get_task_store
+from orchestrator.task_store import Task, TaskStore, get_task_store, AgentResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +37,8 @@ class OrchestrationResult:
     round2_strategist: str
     final_plan: str
     requires_approval: bool
+    backend_mode: str = "unknown"
+    sources: Optional[Dict[str, str]] = None
 
 
 class ThreeBrainOrchestrator:
@@ -72,6 +74,7 @@ class ThreeBrainOrchestrator:
             self.strategist = all_agents["strategist"]
             self.red_team = RedTeamAgent() if enable_red_team else None
             self._agents_need_auto_check = True
+            self._backend_mode = "full-3-brain"
 
     async def check_llm_health(self) -> Dict[str, bool]:
         """Check health of all LLM endpoints."""
@@ -117,6 +120,7 @@ class ThreeBrainOrchestrator:
             self.analyst = auto_agents["analyst"]
             self.strategist = auto_agents["strategist"]
             self._agents_need_auto_check = False
+            self._backend_mode = "full-3-brain" if isinstance(self.builder, MinistralAgent) else "openrouter-fallback"
 
         # Sharpen a vague/rough task description into a clear, specific one
         # before it reaches Builder/Analyst/Strategist.
@@ -220,6 +224,8 @@ class ThreeBrainOrchestrator:
             round2_strategist=response.content,
             final_plan=response.content,
             requires_approval=False,
+            sources=getattr(self, "_last_sources", None),
+            backend_mode=getattr(self, "_backend_mode", "unknown"),
         )
 
     async def _run_simple_path(
@@ -236,7 +242,7 @@ class ThreeBrainOrchestrator:
         self.task_store.update(task)
 
         context_builder = create_context_builder(self.project_root)
-        context = context_builder.build_context(
+        context = await context_builder.build_context(
             task_description=task_description,
             user_notes=user_notes,
             relevant_files=relevant_files or [],
@@ -273,6 +279,8 @@ class ThreeBrainOrchestrator:
             round2_strategist=round1_results["strategist"],
             final_plan=final_plan,
             requires_approval=False,
+            sources=getattr(self, "_last_sources", None),
+            backend_mode=getattr(self, "_backend_mode", "unknown"),
         )
 
     async def _run_full_pipeline(
@@ -288,7 +296,7 @@ class ThreeBrainOrchestrator:
         """Full pipeline with Repomix, Round 1, Round 2, and optional Red Team."""
         context_builder = create_context_builder(self.project_root)
         
-        context_builder_model = context_builder.build_context(
+        context_builder_model = await context_builder.build_context(
             task_description=task_description,
             user_notes=user_notes,
             relevant_files=relevant_files or [],
@@ -297,7 +305,7 @@ class ThreeBrainOrchestrator:
             use_repomix=classification.use_repomix,
             reserve_tokens=3000,
         )
-        context_strategist = context_builder.build_context(
+        context_strategist = await context_builder.build_context(
             task_description=task_description,
             user_notes=user_notes,
             relevant_files=relevant_files or [],
@@ -347,7 +355,7 @@ class ThreeBrainOrchestrator:
                 "Perform security review of the proposed implementation",
                 red_team_context
             )
-            task.red_team_result = red_team_response
+            task.red_team_result = AgentResult(agent_name=red_team_response.agent_name, content=red_team_response.content, confidence=red_team_response.confidence, metadata=red_team_response.metadata or {})
             red_team_output = red_team_response.content
             self.task_store.update(task)
 
@@ -371,6 +379,8 @@ class ThreeBrainOrchestrator:
             round2_strategist=round2_results["strategist"],
             final_plan=final_plan,
             requires_approval=REQUIRE_APPROVAL and not auto_approve,
+            sources=getattr(self, "_last_sources", None),
+            backend_mode=getattr(self, "_backend_mode", "unknown"),
         )
 
     async def _run_round1_parallel(
@@ -380,10 +390,12 @@ class ThreeBrainOrchestrator:
         context_strategist: str,
     ) -> Dict[str, str]:
         """Run Round 1: All three agents analyze independently in parallel."""
+        self._last_sources = {}
 
         async def run_builder():
             logger.info("Round 1: Builder starting...")
             response = await self.builder.process(task_description, context_model)
+            self._last_sources["builder"] = response.agent_name
             return ("builder", response.content)
 
         async def run_analyst():
@@ -392,6 +404,7 @@ class ThreeBrainOrchestrator:
                 "Analyze this task independently. Identify requirements, risks, and potential approaches.",
                 context_model
             )
+            self._last_sources["analyst"] = response.agent_name
             return ("analyst", response.content)
 
         async def run_strategist():
@@ -400,6 +413,8 @@ class ThreeBrainOrchestrator:
                 "Analyze this task from an architectural perspective. Identify key decisions, trade-offs, and long-term implications.",
                 context_strategist
             )
+            self._last_sources["strategist"] = response.agent_name
+            self._last_sources["strategist"] = response.agent_name
             return ("strategist", response.content)
 
         # Run all three in parallel
@@ -611,9 +626,9 @@ class ThreeBrainOrchestrator:
         parts.append(round2_results["strategist"])
 
         # Red Team
-        if self.red_team_result:
+        if task.red_team_result:
             parts.append("\n\n## RED TEAM SECURITY REVIEW")
-            parts.append(self.red_team_result.content)
+            parts.append(task.red_team_result.content)
 
         parts.append("\n---\n")
         parts.append("## NEXT STEPS")

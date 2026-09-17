@@ -202,6 +202,8 @@ class LLMClient:
             )
             response.raise_for_status()
             data = response.json()
+            if isinstance(data, dict) and "error" in data:
+                raise RuntimeError(f"Provider error: {data.get('error')}")
             return ChatCompletionResponse(**data)
         except httpx.TimeoutException as e:
             raise RuntimeError("Request timed out") from e
@@ -295,16 +297,85 @@ def create_deepseek_client() -> LLMClient:
     ))
 
 
-def create_openrouter_client() -> LLMClient:
-    """Create client for OpenRouter (Strategist)."""
+class FallbackLLMClient:
+    """Wraps a primary LLMClient and falls back to a secondary client on provider failure.
+
+    Tracks which backend actually served the most recent call via `last_used`
+    ("primary" or "fallback"), so callers (see OpenRouterAgent.process) can
+    report accurately instead of always claiming the primary model was used.
+    """
+
+    def __init__(self, primary, fallback=None):
+        self.primary = primary
+        self.fallback = fallback
+        self.last_used = "primary"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    @property
+    def config(self):
+        if self.last_used == "fallback" and self.fallback is not None:
+            return self.fallback.config
+        return self.primary.config
+
+    async def health_check(self) -> bool:
+        return await self.primary.health_check()
+
+    async def chat_completion(self, *args, **kwargs):
+        try:
+            result = await self.primary.chat_completion(*args, **kwargs)
+            self.last_used = "primary"
+            return result
+        except Exception as e:
+            if self.fallback is None:
+                raise
+            logger.warning(f"Primary Strategist failed ({e}); falling back to local model.")
+            self.last_used = "fallback"
+            return await self.fallback.chat_completion(*args, **kwargs)
+
+    async def chat_completion_stream(self, *args, **kwargs):
+        try:
+            async for chunk in self.primary.chat_completion_stream(*args, **kwargs):
+                yield chunk
+            self.last_used = "primary"
+        except Exception as e:
+            if self.fallback is None:
+                raise
+            logger.warning(f"Primary Strategist streaming failed ({e}); falling back to local model.")
+            self.last_used = "fallback"
+            async for chunk in self.fallback.chat_completion_stream(*args, **kwargs):
+                yield chunk
+
+
+def create_openrouter_client():
+    """Create client for Strategist: OpenRouter primary, optional local fallback."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key or api_key == "your_key_here":
         raise ValueError("OPENROUTER_API_KEY not set in environment")
 
-    return LLMClient(LLMConfig(
+    primary = LLMClient(LLMConfig(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
         model=os.getenv("STRATEGIST_MODEL", "openrouter/nemotron-3-ultra-free"),
         default_temperature=float(os.getenv("STRATEGIST_TEMP", "0.1")),
         default_max_tokens=int(os.getenv("STRATEGIST_MAX_TOKENS", "8192")),
     ))
+
+    fallback_base_url = os.getenv("STRATEGIST_FALLBACK_BASE_URL")
+    fallback = None
+    if fallback_base_url:
+        fb_url = fallback_base_url if fallback_base_url.endswith('/v1') else fallback_base_url.rstrip('/') + '/v1'
+        fallback = LLMClient(LLMConfig(
+            base_url=fb_url,
+            api_key=os.getenv("STRATEGIST_FALLBACK_API_KEY", "dummy"),
+            model=os.getenv("STRATEGIST_FALLBACK_MODEL", "falcon3:10b"),
+            default_temperature=float(os.getenv("STRATEGIST_TEMP", "0.1")),
+            default_max_tokens=int(os.getenv("STRATEGIST_FALLBACK_MAX_TOKENS", os.getenv("STRATEGIST_MAX_TOKENS", "8192"))),
+            timeout=180,
+        ))
+
+    return FallbackLLMClient(primary, fallback)

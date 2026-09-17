@@ -56,12 +56,7 @@ class Task:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for serialization."""
-        data = asdict(self)
-        # Convert AgentResult objects to dicts
-        for key in ["builder_result", "analyst_result", "strategist_result", "red_team_result"]:
-            if data[key] is not None:
-                data[key] = asdict(data[key])
-        return data
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Task":

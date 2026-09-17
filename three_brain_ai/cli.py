@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 import typer
 from rich.console import Console
@@ -348,6 +348,8 @@ class TaskResponse(BaseModel):
     analyst_output: Optional[str] = None
     strategist_output: Optional[str] = None
     red_team_output: Optional[str] = None
+    backend_mode: Optional[str] = None
+    sources: Optional[Dict[str, str]] = None
 
 
 # FastAPI app for serve command
@@ -385,6 +387,8 @@ if FASTAPI_AVAILABLE:
                 analyst_output=result.analyst_output,
                 strategist_output=result.strategist_output,
                 red_team_output=result.red_team_output,
+                backend_mode=result.backend_mode,
+                sources=result.sources,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
