@@ -255,9 +255,17 @@ def create_ministral_client() -> LLMClient:
     # Ensure V1 API prefix for llama.cpp OpenAI-compatible endpoint
     if not base_url.endswith('/v1'):
         base_url = base_url.rstrip('/') + '/v1'
+    api_key = os.getenv("MINISTRAL_API_KEY", "dummy")
+    if api_key == "dummy":
+        logger.warning(
+            "MINISTRAL_API_KEY is not set (resolved to 'dummy') — the Ministral "
+            "endpoint is UNAUTHENTICATED. Requests carry no Authorization header, "
+            "so if this endpoint is exposed via Oracle's public ports (FRP tunnel) "
+            "anyone can call it. Set MINISTRAL_API_KEY in your environment."
+        )
     return LLMClient(LLMConfig(
         base_url=base_url,
-        api_key=os.getenv("MINISTRAL_API_KEY", "dummy"),
+        api_key=api_key,
         model=os.getenv("MINISTRAL_MODEL", "ministral"),
         default_temperature=float(os.getenv("BUILDER_TEMP", "0.3")),
         default_max_tokens=int(os.getenv("MINISTRAL_MAX_TOKENS", "2048")),
@@ -270,9 +278,17 @@ def create_deepseek_client() -> LLMClient:
     # Ensure V1 API prefix for llama.cpp OpenAI-compatible endpoint
     if not base_url.endswith('/v1'):
         base_url = base_url.rstrip('/') + '/v1'
+    api_key = os.getenv("DEEPSEEK_API_KEY", "dummy")
+    if api_key == "dummy":
+        logger.warning(
+            "DEEPSEEK_API_KEY is not set (resolved to 'dummy') — the DeepSeek "
+            "endpoint is UNAUTHENTICATED. Requests carry no Authorization header, "
+            "so if this endpoint is exposed via Oracle's public ports (FRP tunnel) "
+            "anyone can call it. Set DEEPSEEK_API_KEY in your environment."
+        )
     return LLMClient(LLMConfig(
         base_url=base_url,
-        api_key=os.getenv("DEEPSEEK_API_KEY", "dummy"),
+        api_key=api_key,
         model=os.getenv("DEEPSEEK_MODEL", "deepseek"),
         default_temperature=float(os.getenv("ANALYST_TEMP", "0.2")),
         default_max_tokens=int(os.getenv("DEEPSEEK_MAX_TOKENS", "2048")),

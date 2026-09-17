@@ -64,6 +64,22 @@ class TokenCounter:
         return tokens <= available, tokens, available
 
 
+def trim_to_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to fit within a token budget (proportional truncation).
+
+    Reusable trimming primitive used by context assembly/trimming paths.
+    """
+    counter = TokenCounter()
+    tokens = counter.count_tokens(text)
+    if tokens <= max_tokens:
+        return text
+
+    # Trim proportionally
+    ratio = max_tokens / tokens
+    char_limit = int(len(text) * ratio * 0.95)  # Conservative estimate
+    return text[:char_limit] + "\n...[trimmed to fit token budget]..."
+
+
 class CachedRepomixManager:
     """Manages Repomix with intelligent caching based on file mtimes."""
     
@@ -226,15 +242,7 @@ class CachedRepomixManager:
     
     def _trim_to_tokens(self, text: str, max_tokens: int) -> str:
         """Trim text to fit within token budget."""
-        counter = TokenCounter()
-        tokens = counter.count_tokens(text)
-        if tokens <= max_tokens:
-            return text
-        
-        # Trim proportionally
-        ratio = max_tokens / tokens
-        char_limit = int(len(text) * ratio * 0.95)  # Conservative estimate
-        return text[:char_limit] + "\n...[trimmed to fit token budget]..."
+        return trim_to_tokens(text, max_tokens)
     
     def invalidate_cache(self):
         """Force cache invalidation."""

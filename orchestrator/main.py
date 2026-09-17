@@ -6,13 +6,13 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agents import MinistralAgent, DeepSeekAgent, OpenRouterAgent, RedTeamAgent, create_all_agents, create_all_agents_auto
 from agents.llm_client import LLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client
-from orchestrator.config import REQUIRE_APPROVAL
+from orchestrator.config import REQUIRE_APPROVAL, MINISTRAL_MAX_TOKENS, DEEPSEEK_MAX_TOKENS
 from orchestrator.context_manager import ContextManager, TaskContext
-from orchestrator.context_system import create_context_builder
+from orchestrator.context_system import TokenCounter, create_context_builder, trim_to_tokens
 from orchestrator.memory import get_memory_manager
 from orchestrator.router import TaskClassifier, TaskComplexity, create_classifier
 from orchestrator.task_store import Task, TaskStore, get_task_store
@@ -418,19 +418,31 @@ class ThreeBrainOrchestrator:
         context_strategist: str,
         round1_results: Dict[str, str],
     ) -> Dict[str, str]:
-        """Run Round 2: Sequential refinement with full context."""
+        """Run Round 2: Sequential refinement.
 
-        # Build context with all Round 1 outputs
-        round1_context = context_model + "\n\n" + "=" * 60 + "\n"
-        round1_context += "=== ROUND 1: INDEPENDENT ANALYSES ===\n"
-        round1_context += "\n--- BUILDER (Round 1) ---\n" + round1_results["builder"]
-        round1_context += "\n--- ANALYST (Round 1) ---\n" + round1_results["analyst"]
-        round1_context += "\n--- STRATEGIST (Round 1) ---\n" + round1_results["strategist"]
+        Builder (Ministral) and Analyst (DeepSeek) run on 4096-token context
+        windows: Round 1's base context was budgeted for that, but the full
+        Round 1 outputs (especially the Strategist's long one) far exceed it.
+        Each assembled context is re-trimmed below before the call so the
+        prompt + completion always fit inside the model's window.
+        """
+        round1_header = context_model + "\n\n" + "=" * 60 + "\n"
+        round1_header += "=== ROUND 1: INDEPENDENT ANALYSES ===\n"
 
         # Round 2A: Builder creates final plan incorporating all Round 1 feedback
         logger.info("Round 2A: Builder creating final plan...")
-        builder_context = round1_context + "\n\n=== ROUND 2: REFINEMENT ===\n"
-        builder_context += "\nCreate a comprehensive final implementation plan incorporating all Round 1 analyses."
+        builder_context = self._fit_sections(
+            [
+                ("base", round1_header),
+                ("builder", "\n--- BUILDER (Round 1) ---\n" + round1_results["builder"]),
+                ("analyst", "\n--- ANALYST (Round 1) ---\n" + round1_results["analyst"]),
+                ("strategist", "\n--- STRATEGIST (Round 1) ---\n" + round1_results["strategist"]),
+                ("refinement", "\n\n=== ROUND 2: REFINEMENT ===\n"
+                               "\nCreate a comprehensive final implementation plan incorporating all Round 1 analyses."),
+            ],
+            model="ministral",
+            reserve_tokens=MINISTRAL_MAX_TOKENS,
+        )
         round2_builder = await self.builder.process(
             "Create the final implementation plan based on all Round 1 analyses.",
             builder_context
@@ -438,7 +450,18 @@ class ThreeBrainOrchestrator:
 
         # Round 2B: Analyst attacks the Builder's final plan
         logger.info("Round 2B: Analyst reviewing final plan...")
-        analyst_context = builder_context + "\n\n=== BUILDER FINAL PLAN ===\n" + round2_builder.content
+        analyst_context = self._fit_sections(
+            [
+                ("base", round1_header),
+                ("builder", "\n--- BUILDER (Round 1) ---\n" + round1_results["builder"]),
+                ("analyst", "\n--- ANALYST (Round 1) ---\n" + round1_results["analyst"]),
+                ("strategist", "\n--- STRATEGIST (Round 1) ---\n" + round1_results["strategist"]),
+                ("builder_plan", "\n\n=== BUILDER FINAL PLAN ===\n" + round2_builder.content),
+                ("refinement", "\n\nCritique the Builder's final plan. Find flaws, gaps, and improvements."),
+            ],
+            model="deepseek",
+            reserve_tokens=DEEPSEEK_MAX_TOKENS,
+        )
         round2_analyst = await self.analyst.process(
             "Critique the Builder's final plan. Find flaws, gaps, and improvements.",
             analyst_context
@@ -466,6 +489,71 @@ class ThreeBrainOrchestrator:
             "analyst": round2_analyst.content,
             "strategist": round2_strategist.content,
         }
+
+    @staticmethod
+    def _fit_sections(
+        sections: List[Tuple[str, str]],
+        model: str,
+        reserve_tokens: int,
+    ) -> str:
+        """Join context sections, trimming to fit the target model's window.
+
+        Trimming priority (base context first, so Round 1 outputs are kept
+        whole whenever possible):
+          1. If everything fits inside ``model``'s window minus the completion
+             reserve, return unchanged.
+          2. Otherwise trim the ``base`` (task/project context) section down
+             (dropping it entirely if it can't be kept meaningfully), keeping
+             all later Round 1 / Round 2 content intact.
+          3. If Round 1/2 content alone still exceeds the window, repeatedly
+             truncate the largest section (typically the Strategist's long
+             output) until the whole context fits.
+        """
+        token_counter = TokenCounter()
+        limit = token_counter.get_model_limit(model)
+        budget = limit - reserve_tokens
+
+        sections = [(name, text) for name, text in sections if text]
+        total = sum(token_counter.count_tokens(text) for _, text in sections)
+
+        if total <= budget:
+            return "".join(text for _, text in sections)
+
+        logger.warning(
+            "Round 2 context is %d tokens, over the %d-token budget for %s "
+            "(window=%d, completion reserve=%d); trimming to fit.",
+            total, budget, model, limit, reserve_tokens,
+        )
+
+        # Step 1: trim/drop only the base context, preserving Round content.
+        if sections and sections[0][0] == "base":
+            base_name, base_text = sections[0]
+            body = sections[1:]
+            body_tokens = sum(token_counter.count_tokens(text) for _, text in body)
+            if body_tokens <= budget:
+                base_budget = budget - body_tokens
+                trimmed_base = trim_to_tokens(base_text, base_budget) if base_budget >= 100 else ""
+                return trimmed_base + "".join(text for _, text in body)
+            sections = body  # base context trimmed to zero: drop it entirely
+
+        # Step 2: Round 1/2 outputs alone overflow; truncate largest sections.
+        while sections:
+            total_now = sum(token_counter.count_tokens(text) for _, text in sections)
+            if total_now <= budget:
+                break
+            largest = max(range(len(sections)), key=lambda i: token_counter.count_tokens(sections[i][1]))
+            name, text = sections[largest]
+            others = sum(
+                token_counter.count_tokens(s)
+                for i, (_, s) in enumerate(sections)
+                if i != largest
+            )
+            if others >= budget:
+                sections.pop(largest)
+                continue
+            sections[largest] = (name, trim_to_tokens(text, budget - others))
+
+        return "".join(text for _, text in sections)
 
     def _build_red_team_context(
         self,
