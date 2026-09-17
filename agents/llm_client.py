@@ -433,7 +433,7 @@ def create_openrouter_client_with_fallback() -> FallbackLLMClient:
         default_max_tokens=int(os.getenv("STRATEGIST_MAX_TOKENS", "8192")),
     ))
 
-    fallback_model = os.getenv("STRATEGIST_FALLBACK_MODEL", "openrouter/zhipuai-glm-4-flash")
+    fallback_model = os.getenv("STRATEGIST_FALLBACK_MODEL", "openrouter/z-ai/glm-5.3-flash")
     fallback = LLMClient(LLMConfig(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
