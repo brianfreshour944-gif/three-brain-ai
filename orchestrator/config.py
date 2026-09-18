@@ -49,6 +49,9 @@ MINISTRAL_MAX_TOKENS = int(os.getenv("MINISTRAL_MAX_TOKENS", "2048"))
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "2048"))
 STRATEGIST_MAX_TOKENS = int(os.getenv("STRATEGIST_MAX_TOKENS", "8192"))
 
+# LLM call timeout (seconds) - prevents hanging on unresponsive backends
+LLM_CALL_TIMEOUT = int(os.getenv("LLM_CALL_TIMEOUT", "300"))
+
 # Safety
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "true").lower() == "true"
 BLOCKED_PATHS = [p.strip() for p in os.getenv("BLOCKED_PATHS", ".env,*.key,*.pem,secrets/,credentials/").split(",")]

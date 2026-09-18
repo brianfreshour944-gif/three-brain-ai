@@ -128,13 +128,23 @@ class LLMClientPool:
                 timeout=httpx.Timeout(self.config.timeout, connect=10.0),
                 headers=headers,
                 limits=limits,
-                http2=False,
+                http2=self._try_http2(),
                 follow_redirects=True,
             )
             logger.debug(
                 f"Created new pooled client for {self.config.base_url}:{self.config.model}"
             )
             return self._client
+
+    @staticmethod
+    def _try_http2() -> bool:
+        """Try to enable HTTP/2, return False if httpx[http2] not installed."""
+        try:
+            import h2  # noqa: F401
+            return True
+        except ImportError:
+            logger.debug("HTTP/2 not available (h2 not installed), falling back to HTTP/1.1")
+            return False
 
     async def close(self):
         """Close the pooled client."""

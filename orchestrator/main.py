@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agents import MinistralAgent, DeepSeekAgent, OpenRouterAgent, RedTeamAgent, create_all_agents, create_all_agents_auto
 from agents.llm_client import LLMClient, FallbackLLMClient, create_ministral_client, create_deepseek_client, create_openrouter_client, create_openrouter_client_with_fallback
-from orchestrator.config import REQUIRE_APPROVAL, MINISTRAL_MAX_TOKENS, DEEPSEEK_MAX_TOKENS
+from orchestrator.config import REQUIRE_APPROVAL, MINISTRAL_MAX_TOKENS, DEEPSEEK_MAX_TOKENS, LLM_CALL_TIMEOUT
 from orchestrator.context_manager import ContextManager, TaskContext
 from orchestrator.context_system import TokenCounter, create_context_builder, trim_to_tokens
 from orchestrator.memory import get_memory_manager
@@ -181,7 +181,10 @@ class ThreeBrainOrchestrator:
                 f"Original: {raw_description}\n\n"
                 "Rewritten:"
             )
-            response = await self.strategist.process(prompt, "")
+            response = await asyncio.wait_for(
+                self.strategist.process(prompt, ""),
+                timeout=LLM_CALL_TIMEOUT,
+            )
             clarified = response.content.strip() if response and response.content else ""
             if clarified:
                 logger.info(f"Task clarified: '{raw_description}' -> '{clarified}'")
@@ -204,7 +207,10 @@ class ThreeBrainOrchestrator:
         # Single call to Strategist with minimal context
         context = f"Task: {task_description}\nNotes: {user_notes}\n\nProvide a concise, direct answer."
         
-        response = await self.strategist.process(task_description, context)
+        response = await asyncio.wait_for(
+            self.strategist.process(task_description, context),
+            timeout=LLM_CALL_TIMEOUT,
+        )
         
         task.final_plan = response.content
         task.status = "approved"
@@ -351,9 +357,12 @@ class ThreeBrainOrchestrator:
             red_team_context = self._build_red_team_context(
                 context_builder_model, round1_results, round2_results
             )
-            red_team_response = await self.red_team.process(
-                "Perform security review of the proposed implementation",
-                red_team_context
+            red_team_response = await asyncio.wait_for(
+                self.red_team.process(
+                    "Perform security review of the proposed implementation",
+                    red_team_context
+                ),
+                timeout=LLM_CALL_TIMEOUT,
             )
             task.red_team_result = AgentResult(agent_name=red_team_response.agent_name, content=red_team_response.content, confidence=red_team_response.confidence, metadata=red_team_response.metadata or {})
             red_team_output = red_team_response.content
@@ -394,26 +403,34 @@ class ThreeBrainOrchestrator:
 
         async def run_builder():
             logger.info("Round 1: Builder starting...")
-            response = await self.builder.process(task_description, context_model)
+            response = await asyncio.wait_for(
+                self.builder.process(task_description, context_model),
+                timeout=LLM_CALL_TIMEOUT,
+            )
             self._last_sources["builder"] = response.agent_name
             return ("builder", response.content)
 
         async def run_analyst():
             logger.info("Round 1: Analyst starting...")
-            response = await self.analyst.process(
-                "Analyze this task independently. Identify requirements, risks, and potential approaches.",
-                context_model
+            response = await asyncio.wait_for(
+                self.analyst.process(
+                    "Analyze this task independently. Identify requirements, risks, and potential approaches.",
+                    context_model
+                ),
+                timeout=LLM_CALL_TIMEOUT,
             )
             self._last_sources["analyst"] = response.agent_name
             return ("analyst", response.content)
 
         async def run_strategist():
             logger.info("Round 1: Strategist starting...")
-            response = await self.strategist.process(
-                "Analyze this task from an architectural perspective. Identify key decisions, trade-offs, and long-term implications.",
-                context_strategist
+            response = await asyncio.wait_for(
+                self.strategist.process(
+                    "Analyze this task from an architectural perspective. Identify key decisions, trade-offs, and long-term implications.",
+                    context_strategist
+                ),
+                timeout=LLM_CALL_TIMEOUT,
             )
-            self._last_sources["strategist"] = response.agent_name
             self._last_sources["strategist"] = response.agent_name
             return ("strategist", response.content)
 
@@ -458,9 +475,12 @@ class ThreeBrainOrchestrator:
             model="ministral",
             reserve_tokens=MINISTRAL_MAX_TOKENS,
         )
-        round2_builder = await self.builder.process(
-            "Create the final implementation plan based on all Round 1 analyses.",
-            builder_context
+        round2_builder = await asyncio.wait_for(
+            self.builder.process(
+                "Create the final implementation plan based on all Round 1 analyses.",
+                builder_context
+            ),
+            timeout=LLM_CALL_TIMEOUT,
         )
 
         # Round 2B: Analyst attacks the Builder's final plan
@@ -477,9 +497,12 @@ class ThreeBrainOrchestrator:
             model="deepseek",
             reserve_tokens=DEEPSEEK_MAX_TOKENS,
         )
-        round2_analyst = await self.analyst.process(
-            "Critique the Builder's final plan. Find flaws, gaps, and improvements.",
-            analyst_context
+        round2_analyst = await asyncio.wait_for(
+            self.analyst.process(
+                "Critique the Builder's final plan. Find flaws, gaps, and improvements.",
+                analyst_context
+            ),
+            timeout=LLM_CALL_TIMEOUT,
         )
 
         # Round 2C: Strategist synthesizes into final contract
@@ -494,9 +517,12 @@ class ThreeBrainOrchestrator:
         strategist_context += "\n--- BUILDER (Round 2) ---\n" + round2_builder.content
         strategist_context += "\n--- ANALYST (Round 2) ---\n" + round2_analyst.content
         strategist_context += "\n\nSynthesize into a final implementation contract. Resolve all issues."
-        round2_strategist = await self.strategist.process(
-            "Synthesize into a final implementation contract. Resolve all issues.",
-            strategist_context
+        round2_strategist = await asyncio.wait_for(
+            self.strategist.process(
+                "Synthesize into a final implementation contract. Resolve all issues.",
+                strategist_context
+            ),
+            timeout=LLM_CALL_TIMEOUT,
         )
 
         return {
